@@ -142,6 +142,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_SET_CLIPBOARD 13
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 14
 #define IDX_DS_ADAPTIVE_TRIGGERS 15
+#define IDX_SET_SBS_MODE 16
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -163,6 +164,7 @@ static const short packetTypesGen3[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Set SBS Mode (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -181,6 +183,7 @@ static const short packetTypesGen4[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Set SBS Mode (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -199,6 +202,7 @@ static const short packetTypesGen5[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Set SBS Mode (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -217,6 +221,7 @@ static const short packetTypesGen7[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Set SBS Mode (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -235,6 +240,7 @@ static const short packetTypesGen7Enc[] = {
     0x3001, // Set Clipboard (Apollo protocol extension)
     0x3002, // File transfer nonce request (Apollo protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
+    0x3003, // Set SBS Mode (Apollo protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -2055,6 +2061,27 @@ int LiSendExecServerCmd(uint8_t cmdId) {
     uint8_t payload[4] = {cmdId, 0, 0, 0};
     return sendMessageAndForget(
         packetTypes[IDX_EXEC_SERVER_CMD],
+        sizeof(payload),
+        payload,
+        CTRL_CHANNEL_SERVERCTL,
+        ENET_PACKET_FLAG_RELIABLE,
+        false
+    );
+}
+
+// Ask the host (Apollo protocol extension) to switch host-side SBS 3D mode on the fly.
+// mode is one of SBS_MODE_* (see Limelight.h):
+//   SBS_MODE_OFF   (0) - no host depth; host emits a plain W x H frame.
+//   SBS_MODE_GAME  (1) - async low-latency depth pipeline; host emits 2W x H.
+//   SBS_MODE_MOVIE (2) - sync high-latency depth pipeline; host emits 2W x H (future).
+int LiSendSetSbsMode(uint8_t mode) {
+    uint8_t payload[4] = {mode, 0, 0, 0};
+    if (packetTypes[IDX_SET_SBS_MODE] == -1) {
+        // Host doesn't support the Apollo SBS extension (non-Gen7Enc control stream).
+        return -1;
+    }
+    return sendMessageAndForget(
+        packetTypes[IDX_SET_SBS_MODE],
         sizeof(payload),
         payload,
         CTRL_CHANNEL_SERVERCTL,

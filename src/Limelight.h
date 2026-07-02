@@ -568,6 +568,17 @@ bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVarianc
 // This function sends a request to the server to execute the requested cmd id.
 int LiSendExecServerCmd(uint8_t cmdId);
 
+// Host-side SBS modes carried by LiSendSetSbsMode (Apollo protocol extension).
+#define SBS_MODE_OFF   0 // No host depth; host emits a plain W x H frame.
+#define SBS_MODE_GAME  1 // Async low-latency depth pipeline; host emits 2W x H.
+#define SBS_MODE_MOVIE 2 // Sync high-latency depth pipeline; host emits 2W x H (future).
+
+// This function asks the host (Apollo protocol extension) to switch host-side SBS 3D
+// mode mid-stream. mode is one of the SBS_MODE_* values above; GAME/MOVIE make the host
+// emit a 2W x H side-by-side frame, OFF reverts to plain W x H. Returns -1 if the host
+// lacks the SBS extension.
+int LiSendSetSbsMode(uint8_t mode);
+
 // This function sends an empty payload to the server.
 // This method exists here for workaround client side wifi sleeps.
 int LiSendEmptyPayload();
