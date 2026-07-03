@@ -579,6 +579,11 @@ int LiSendExecServerCmd(uint8_t cmdId);
 // lacks the SBS extension.
 int LiSendSetSbsMode(uint8_t mode);
 
+// This function asks the host (Apollo protocol extension) to dump one SBS debug frame
+// (the 2D source, the depth map and the SBS result) to the host's configured debug dir.
+// For diagnosing 2D->3D reprojection artifacts. Returns -1 if the host lacks the extension.
+int LiSendSbsDebugDump(void);
+
 // This function sends an empty payload to the server.
 // This method exists here for workaround client side wifi sleeps.
 int LiSendEmptyPayload();

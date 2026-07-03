@@ -143,6 +143,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 14
 #define IDX_DS_ADAPTIVE_TRIGGERS 15
 #define IDX_SET_SBS_MODE 16
+#define IDX_SBS_DEBUG_DUMP 17
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -165,6 +166,7 @@ static const short packetTypesGen3[] = {
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
+    -1,     // SBS Debug Dump (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -184,6 +186,7 @@ static const short packetTypesGen4[] = {
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
+    -1,     // SBS Debug Dump (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -203,6 +206,7 @@ static const short packetTypesGen5[] = {
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
+    -1,     // SBS Debug Dump (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -222,6 +226,7 @@ static const short packetTypesGen7[] = {
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
+    -1,     // SBS Debug Dump (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -241,6 +246,7 @@ static const short packetTypesGen7Enc[] = {
     0x3002, // File transfer nonce request (Apollo protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
     0x3003, // Set SBS Mode (Apollo protocol extension)
+    0x3004, // SBS Debug Dump (Apollo protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -2082,6 +2088,24 @@ int LiSendSetSbsMode(uint8_t mode) {
     }
     return sendMessageAndForget(
         packetTypes[IDX_SET_SBS_MODE],
+        sizeof(payload),
+        payload,
+        CTRL_CHANNEL_SERVERCTL,
+        ENET_PACKET_FLAG_RELIABLE,
+        false
+    );
+}
+
+// Ask the host (Apollo protocol extension) to dump one SBS debug frame (source/depth/SBS)
+// to the host's configured debug dir. No payload needed; a single reliable message.
+int LiSendSbsDebugDump(void) {
+    uint8_t payload[4] = {0, 0, 0, 0};
+    if (packetTypes[IDX_SBS_DEBUG_DUMP] == -1) {
+        // Host doesn't support the Apollo SBS extension (non-Gen7Enc control stream).
+        return -1;
+    }
+    return sendMessageAndForget(
+        packetTypes[IDX_SBS_DEBUG_DUMP],
         sizeof(payload),
         payload,
         CTRL_CHANNEL_SERVERCTL,
