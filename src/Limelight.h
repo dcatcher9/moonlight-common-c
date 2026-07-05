@@ -579,6 +579,21 @@ int LiSendExecServerCmd(uint8_t cmdId);
 // lacks the SBS extension.
 int LiSendSetSbsMode(uint8_t mode);
 
+// Host depth-model registry ids carried by LiSendSetDepthModel (Apollo protocol extension).
+// Must match config::depth_model_registry() ordering on the host.
+#define DEPTH_MODEL_DA_V2_SMALL      0 // Depth Anything V2 small (default, fastest).
+#define DEPTH_MODEL_DA_V2_BASE       1 // Depth Anything V2 base (more small-feature relief).
+#define DEPTH_MODEL_DA_V3_SMALL      2 // Depth Anything V3 small, fp16 (rank-5 + reciprocal depth).
+#define DEPTH_MODEL_DA_V3_BASE       3 // Depth Anything V3 base, fp16.
+#define DEPTH_MODEL_DA_V3_SMALL_FP32 4 // Depth Anything V3 small, fp32 (bring-up/reference build).
+#define DEPTH_MODEL_DA_V3_BASE_FP32  5 // Depth Anything V3 base, fp32 (reference build).
+
+// This function asks the host (Apollo protocol extension) to switch the host-side depth model
+// mid-stream. id is one of the DEPTH_MODEL_* values above. The host rebuilds the encode session
+// and reloads the model (building its engine in the background if needed). Returns -1 if the
+// host lacks the extension.
+int LiSendSetDepthModel(uint8_t id);
+
 // This function asks the host (Apollo protocol extension) to dump one SBS debug frame
 // (the 2D source, the depth map and the SBS result) to the host's configured debug dir.
 // For diagnosing 2D->3D reprojection artifacts. Returns -1 if the host lacks the extension.

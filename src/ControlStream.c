@@ -144,6 +144,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_DS_ADAPTIVE_TRIGGERS 15
 #define IDX_SET_SBS_MODE 16
 #define IDX_SBS_DEBUG_DUMP 17
+#define IDX_SET_DEPTH_MODEL 18
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -167,6 +168,7 @@ static const short packetTypesGen3[] = {
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
+    -1,     // Set Depth Model (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -187,6 +189,7 @@ static const short packetTypesGen4[] = {
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
+    -1,     // Set Depth Model (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -207,6 +210,7 @@ static const short packetTypesGen5[] = {
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
+    -1,     // Set Depth Model (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -227,6 +231,7 @@ static const short packetTypesGen7[] = {
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
+    -1,     // Set Depth Model (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -247,6 +252,7 @@ static const short packetTypesGen7Enc[] = {
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
     0x3003, // Set SBS Mode (Apollo protocol extension)
     0x3004, // SBS Debug Dump (Apollo protocol extension)
+    0x3005, // Set Depth Model (Apollo protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -2088,6 +2094,27 @@ int LiSendSetSbsMode(uint8_t mode) {
     }
     return sendMessageAndForget(
         packetTypes[IDX_SET_SBS_MODE],
+        sizeof(payload),
+        payload,
+        CTRL_CHANNEL_SERVERCTL,
+        ENET_PACKET_FLAG_RELIABLE,
+        false
+    );
+}
+
+// Ask the host (Apollo protocol extension) to switch the host-side depth model on the fly.
+// id is an index into the host's depth-model registry (see config::depth_model_registry()):
+//   0 = DA-V2 small, 1 = DA-V2 base, 2 = DA-V3 small, 3 = DA-V3 base.
+// The host rebuilds the encode session and reloads the selected model (building its engine in
+// the background if needed; it streams flat meanwhile). Returns -1 if the host lacks the extension.
+int LiSendSetDepthModel(uint8_t id) {
+    uint8_t payload[4] = {id, 0, 0, 0};
+    if (packetTypes[IDX_SET_DEPTH_MODEL] == -1) {
+        // Host doesn't support the Apollo SBS extension (non-Gen7Enc control stream).
+        return -1;
+    }
+    return sendMessageAndForget(
+        packetTypes[IDX_SET_DEPTH_MODEL],
         sizeof(payload),
         payload,
         CTRL_CHANNEL_SERVERCTL,
