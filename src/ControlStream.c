@@ -82,6 +82,10 @@ typedef struct _QUEUED_ASYNC_CALLBACK {
             uint8_t left[DS_EFFECT_PAYLOAD_SIZE];
             uint8_t right[DS_EFFECT_PAYLOAD_SIZE];
         } dsAdaptiveTrigger;
+        struct {
+            uint8_t phase;    // 0 = idle, 1 = loading, 2 = ready
+            uint8_t modelId;  // depth model registry index (0xFF = unknown)
+        } depthStatus;
     } data;
     LINKED_BLOCKING_QUEUE_ENTRY entry;
 } QUEUED_ASYNC_CALLBACK, *PQUEUED_ASYNC_CALLBACK;
@@ -145,6 +149,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_SET_SBS_MODE 16
 #define IDX_SBS_DEBUG_DUMP 17
 #define IDX_SET_DEPTH_MODEL 18
+#define IDX_DEPTH_STATUS 19
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -169,6 +174,7 @@ static const short packetTypesGen3[] = {
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Set Depth Model (unused)
+    -1,     // Depth Status (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -190,6 +196,7 @@ static const short packetTypesGen4[] = {
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Set Depth Model (unused)
+    -1,     // Depth Status (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -211,6 +218,7 @@ static const short packetTypesGen5[] = {
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Set Depth Model (unused)
+    -1,     // Depth Status (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -232,6 +240,7 @@ static const short packetTypesGen7[] = {
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Set Depth Model (unused)
+    -1,     // Depth Status (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -253,6 +262,7 @@ static const short packetTypesGen7Enc[] = {
     0x3003, // Set SBS Mode (Apollo protocol extension)
     0x3004, // SBS Debug Dump (Apollo protocol extension)
     0x3005, // Set Depth Model (Apollo protocol extension)
+    0x3006, // Depth Status (Apollo protocol extension, host->client)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -1026,6 +1036,13 @@ static void asyncCallbackThreadFunc(void* context) {
                                                   queuedCb->data.dsAdaptiveTrigger.left,
                                                   queuedCb->data.dsAdaptiveTrigger.right);
             break;
+        case IDX_DEPTH_STATUS:
+            // Infrequent (only on a depth-engine phase change); not batchable.
+            if (ListenerCallbacks.depthStatus != NULL) {
+                ListenerCallbacks.depthStatus(queuedCb->data.depthStatus.phase,
+                                              queuedCb->data.depthStatus.modelId);
+            }
+            break;
         default:
             // Unhandled packet type from queueAsyncCallback()
             LC_ASSERT(false);
@@ -1044,7 +1061,8 @@ static bool needsAsyncCallback(unsigned short packetType) {
            packetType == packetTypes[IDX_HDR_INFO] ||
            packetType == packetTypes[IDX_SET_CLIPBOARD] ||
            packetType == packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST] ||
-           packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS];
+           packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
+           packetType == packetTypes[IDX_DEPTH_STATUS];
 }
 
 static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
@@ -1104,6 +1122,11 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
         BbGetBytes(&bb, queuedCb->data.dsAdaptiveTrigger.left, DS_EFFECT_PAYLOAD_SIZE);
         BbGetBytes(&bb, queuedCb->data.dsAdaptiveTrigger.right, DS_EFFECT_PAYLOAD_SIZE);
         queuedCb->typeIndex = IDX_DS_ADAPTIVE_TRIGGERS;
+    }
+    else if (ctlHdr->type == packetTypes[IDX_DEPTH_STATUS]) {
+        BbGet8(&bb, &queuedCb->data.depthStatus.phase);
+        BbGet8(&bb, &queuedCb->data.depthStatus.modelId);
+        queuedCb->typeIndex = IDX_DEPTH_STATUS;
     }
     else {
         // Unhandled packet type from needsAsyncCallback()

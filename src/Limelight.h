@@ -479,6 +479,12 @@ typedef void(*ConnListenerSetAdaptiveTriggers)(uint16_t controllerNumber, uint8_
 // This callback is invoked to set a controller's RGB LED (if present).
 typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b);
 
+// This callback is invoked when the host's SBS depth engine changes phase (Apollo extension):
+// phase 0 = idle, 1 = loading (engine build/load/warmup, ~seconds of flat SBS), 2 = ready.
+// modelId is the host depth-model registry index (0xFF if unknown). The client can use this to
+// show/hide a "loading depth model" indicator.
+typedef void(*ConnListenerDepthStatus)(uint8_t phase, uint8_t modelId);
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
     ConnListenerStageComplete stageComplete;
@@ -493,6 +499,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerSetMotionEventState setMotionEventState;
     ConnListenerSetControllerLED setControllerLED;
     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
+    ConnListenerDepthStatus depthStatus;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -587,6 +594,7 @@ int LiSendSetSbsMode(uint8_t mode);
 #define DEPTH_MODEL_DA_V3_BASE       3 // Depth Anything V3 base, fp16.
 #define DEPTH_MODEL_DA_V3_SMALL_FP32 4 // Depth Anything V3 small, fp32 (bring-up/reference build).
 #define DEPTH_MODEL_DA_V3_BASE_FP32  5 // Depth Anything V3 base, fp32 (reference build).
+#define DEPTH_MODEL_DA3MONO_LARGE    6 // DA3MONO-LARGE (monocular-specialized DA-V3, 0.35B, V2-level pop).
 
 // This function asks the host (Apollo protocol extension) to switch the host-side depth model
 // mid-stream. id is one of the DEPTH_MODEL_* values above. The host rebuilds the encode session
