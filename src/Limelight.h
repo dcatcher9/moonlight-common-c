@@ -480,7 +480,8 @@ typedef void(*ConnListenerSetAdaptiveTriggers)(uint16_t controllerNumber, uint8_
 typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b);
 
 // This callback is invoked when the host's SBS depth engine changes phase (Apollo extension):
-// phase 0 = idle, 1 = loading (engine build/load/warmup, ~seconds of flat SBS), 2 = ready.
+// phase 0 = idle/failure, 1 = TensorRT engine loading/building, 2 = ready,
+// phase 3 = initializing the device-specific 3D pipeline with an already-cached engine.
 typedef void(*ConnListenerDepthStatus)(uint8_t phase);
 typedef void(*ConnListenerSbsProfileList)(const char* profiles, int length);
 
