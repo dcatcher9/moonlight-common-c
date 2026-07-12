@@ -481,9 +481,8 @@ typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r
 
 // This callback is invoked when the host's SBS depth engine changes phase (Apollo extension):
 // phase 0 = idle, 1 = loading (engine build/load/warmup, ~seconds of flat SBS), 2 = ready.
-// modelId is the host depth-model registry index (0xFF if unknown). The client can use this to
-// show/hide a "loading depth model" indicator.
-typedef void(*ConnListenerDepthStatus)(uint8_t phase, uint8_t modelId);
+typedef void(*ConnListenerDepthStatus)(uint8_t phase);
+typedef void(*ConnListenerSbsProfileList)(const char* profiles, int length);
 
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
@@ -500,6 +499,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerSetControllerLED setControllerLED;
     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
     ConnListenerDepthStatus depthStatus;
+    ConnListenerSbsProfileList sbsProfileList;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -576,31 +576,17 @@ bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVarianc
 int LiSendExecServerCmd(uint8_t cmdId);
 
 // Host-side SBS modes carried by LiSendSetSbsMode (Apollo protocol extension).
-#define SBS_MODE_OFF   0 // No host depth; host emits a plain W x H frame.
-#define SBS_MODE_GAME  1 // Async low-latency depth pipeline; host emits 2W x H.
-#define SBS_MODE_MOVIE 2 // Sync high-latency depth pipeline; host emits 2W x H (future).
+#define SBS_MODE_OFF 0 // No host depth; host emits a plain W x H frame.
+#define SBS_MODE_AI  1 // Enable the host-selected SBS profile; host emits 2W x H.
 
 // This function asks the host (Apollo protocol extension) to switch host-side SBS 3D
-// mode mid-stream. mode is one of the SBS_MODE_* values above; GAME/MOVIE make the host
-// emit a 2W x H side-by-side frame, OFF reverts to plain W x H. Returns -1 if the host
+// state mid-stream. AI makes the host emit a profile-configured 2W x H side-by-side frame;
+// OFF reverts to plain W x H. Returns -1 if the host
 // lacks the SBS extension.
 int LiSendSetSbsMode(uint8_t mode);
-
-// Host depth-model registry ids carried by LiSendSetDepthModel (Apollo protocol extension).
-// Must match config::depth_model_registry() ordering on the host.
-#define DEPTH_MODEL_DA_V2_SMALL      0 // Depth Anything V2 small (default, fastest).
-#define DEPTH_MODEL_DA_V2_BASE       1 // Depth Anything V2 base (more small-feature relief).
-#define DEPTH_MODEL_DA_V3_SMALL      2 // Depth Anything V3 small, fp16 (rank-5 + reciprocal depth).
-#define DEPTH_MODEL_DA_V3_BASE       3 // Depth Anything V3 base, fp16.
-#define DEPTH_MODEL_DA_V3_SMALL_FP32 4 // Depth Anything V3 small, fp32 (bring-up/reference build).
-#define DEPTH_MODEL_DA_V3_BASE_FP32  5 // Depth Anything V3 base, fp32 (reference build).
-#define DEPTH_MODEL_DA3MONO_LARGE    6 // DA3MONO-LARGE (monocular-specialized DA-V3, 0.35B, V2-level pop).
-
-// This function asks the host (Apollo protocol extension) to switch the host-side depth model
-// mid-stream. id is one of the DEPTH_MODEL_* values above. The host rebuilds the encode session
-// and reloads the model (building its engine in the background if needed). Returns -1 if the
-// host lacks the extension.
-int LiSendSetDepthModel(uint8_t id);
+// Select a host-advertised SBS profile by name for this stream.
+int LiSendSetSbsProfile(const char* profile);
+int LiRequestSbsProfiles(void);
 
 // This function asks the host (Apollo protocol extension) to dump one SBS debug frame
 // (the 2D source, the depth map and the SBS result) to the host's configured debug dir.
