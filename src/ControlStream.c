@@ -83,7 +83,7 @@ typedef struct _QUEUED_ASYNC_CALLBACK {
             uint8_t right[DS_EFFECT_PAYLOAD_SIZE];
         } dsAdaptiveTrigger;
         struct {
-            uint8_t phase;    // 0 = idle, 1 = loading, 2 = ready
+            uint8_t phase;    // 0 idle/failure, 1 engine load/build, 2 ready, 3 pipeline init
         } depthStatus;
         struct {
             char* value;      // current profile, then available names, newline-separated
