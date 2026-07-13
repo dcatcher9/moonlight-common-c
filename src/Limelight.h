@@ -483,7 +483,6 @@ typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r
 // phase 0 = idle/failure, 1 = TensorRT engine loading/building, 2 = ready,
 // phase 3 = initializing the device-specific 3D pipeline with an already-cached engine.
 typedef void(*ConnListenerDepthStatus)(uint8_t phase);
-typedef void(*ConnListenerSbsProfileList)(const char* profiles, int length);
 
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
@@ -500,7 +499,6 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerSetControllerLED setControllerLED;
     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
     ConnListenerDepthStatus depthStatus;
-    ConnListenerSbsProfileList sbsProfileList;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -578,16 +576,13 @@ int LiSendExecServerCmd(uint8_t cmdId);
 
 // Host-side SBS modes carried by LiSendSetSbsMode (Apollo protocol extension).
 #define SBS_MODE_OFF 0 // No host depth; host emits a plain W x H frame.
-#define SBS_MODE_AI  1 // Enable the host-selected SBS profile; host emits 2W x H.
+#define SBS_MODE_AI  1 // Enable the host's startup-profile pipeline; host emits 2W x H.
 
 // This function asks the host (Apollo protocol extension) to switch host-side SBS 3D
 // state mid-stream. AI makes the host emit a profile-configured 2W x H side-by-side frame;
 // OFF reverts to plain W x H. Returns -1 if the host
 // lacks the SBS extension.
 int LiSendSetSbsMode(uint8_t mode);
-// Select a host-advertised SBS profile by name for this stream.
-int LiSendSetSbsProfile(const char* profile);
-int LiRequestSbsProfiles(void);
 
 // This function asks the host (Apollo protocol extension) to dump one SBS debug frame
 // (the 2D source, the depth map and the SBS result) to the host's configured debug dir.

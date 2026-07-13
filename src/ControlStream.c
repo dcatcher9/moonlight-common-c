@@ -85,10 +85,6 @@ typedef struct _QUEUED_ASYNC_CALLBACK {
         struct {
             uint8_t phase;    // 0 idle/failure, 1 engine load/build, 2 ready, 3 pipeline init
         } depthStatus;
-        struct {
-            char* value;      // current profile, then available names, newline-separated
-            int length;
-        } sbsProfiles;
     } data;
     LINKED_BLOCKING_QUEUE_ENTRY entry;
 } QUEUED_ASYNC_CALLBACK, *PQUEUED_ASYNC_CALLBACK;
@@ -151,9 +147,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_DS_ADAPTIVE_TRIGGERS 15
 #define IDX_SET_SBS_MODE 16
 #define IDX_SBS_DEBUG_DUMP 17
-#define IDX_SET_SBS_PROFILE 18
-#define IDX_DEPTH_STATUS 19
-#define IDX_SBS_PROFILE_LIST 20
+#define IDX_DEPTH_STATUS 18
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -177,9 +171,7 @@ static const short packetTypesGen3[] = {
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
-    -1,     // Set SBS Profile (unused)
     -1,     // Depth Status (unused)
-    -1,     // SBS Profile List (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -200,9 +192,7 @@ static const short packetTypesGen4[] = {
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
-    -1,     // Set SBS Profile (unused)
     -1,     // Depth Status (unused)
-    -1,     // SBS Profile List (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -223,9 +213,7 @@ static const short packetTypesGen5[] = {
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
-    -1,     // Set SBS Profile (unused)
     -1,     // Depth Status (unused)
-    -1,     // SBS Profile List (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -246,9 +234,7 @@ static const short packetTypesGen7[] = {
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
-    -1,     // Set SBS Profile (unused)
     -1,     // Depth Status (unused)
-    -1,     // SBS Profile List (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -269,9 +255,7 @@ static const short packetTypesGen7Enc[] = {
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
     0x3003, // Set SBS Mode (Apollo protocol extension)
     0x3004, // SBS Debug Dump (Apollo protocol extension)
-    0x3005, // Set SBS Profile (Apollo protocol extension)
     0x3006, // Depth Status (Apollo protocol extension, host->client)
-    0x3007, // SBS Profile List (Apollo protocol extension, host->client)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -1051,13 +1035,6 @@ static void asyncCallbackThreadFunc(void* context) {
                 ListenerCallbacks.depthStatus(queuedCb->data.depthStatus.phase);
             }
             break;
-        case IDX_SBS_PROFILE_LIST:
-            if (ListenerCallbacks.sbsProfileList != NULL) {
-                ListenerCallbacks.sbsProfileList(queuedCb->data.sbsProfiles.value,
-                                                 queuedCb->data.sbsProfiles.length);
-            }
-            free(queuedCb->data.sbsProfiles.value);
-            break;
         default:
             // Unhandled packet type from queueAsyncCallback()
             LC_ASSERT(false);
@@ -1077,8 +1054,7 @@ static bool needsAsyncCallback(unsigned short packetType) {
            packetType == packetTypes[IDX_SET_CLIPBOARD] ||
            packetType == packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST] ||
            packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
-           packetType == packetTypes[IDX_DEPTH_STATUS] ||
-           packetType == packetTypes[IDX_SBS_PROFILE_LIST];
+           packetType == packetTypes[IDX_DEPTH_STATUS];
 }
 
 static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
@@ -1143,22 +1119,6 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
         BbGet8(&bb, &queuedCb->data.depthStatus.phase);
         queuedCb->typeIndex = IDX_DEPTH_STATUS;
     }
-    else if (ctlHdr->type == packetTypes[IDX_SBS_PROFILE_LIST]) {
-        int valueLength = packetLength - sizeof(*ctlHdr);
-        if (valueLength <= 0 || valueLength > 4096) {
-            free(queuedCb);
-            return;
-        }
-        queuedCb->data.sbsProfiles.value = malloc(valueLength + 1);
-        if (queuedCb->data.sbsProfiles.value == NULL) {
-            free(queuedCb);
-            return;
-        }
-        BbGetBytes(&bb, (uint8_t*)queuedCb->data.sbsProfiles.value, valueLength);
-        queuedCb->data.sbsProfiles.value[valueLength] = '\0';
-        queuedCb->data.sbsProfiles.length = valueLength;
-        queuedCb->typeIndex = IDX_SBS_PROFILE_LIST;
-    }
     else {
         // Unhandled packet type from needsAsyncCallback()
         LC_ASSERT(false);
@@ -1169,9 +1129,6 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
     err = LbqOfferQueueItem(&asyncCallbackQueue, queuedCb, &queuedCb->entry);
     if (err != LBQ_SUCCESS) {
         Limelog("Failed to queue async callback: %d\n", err);
-        if (queuedCb->typeIndex == IDX_SBS_PROFILE_LIST) {
-            free(queuedCb->data.sbsProfiles.value);
-        }
         free(queuedCb);
     }
 }
@@ -2141,7 +2098,7 @@ int LiSendExecServerCmd(uint8_t cmdId) {
 // Ask the host (Apollo protocol extension) to switch host-side SBS 3D mode on the fly.
 // mode is one of SBS_MODE_* (see Limelight.h):
 //   SBS_MODE_OFF (0) - no host depth; host emits a plain W x H frame.
-//   SBS_MODE_AI  (1) - enable the host-selected SBS profile; host emits 2W x H.
+//   SBS_MODE_AI  (1) - enable the host's startup-profile pipeline; host emits 2W x H.
 int LiSendSetSbsMode(uint8_t mode) {
     uint8_t payload[4] = {mode, 0, 0, 0};
     if (packetTypes[IDX_SET_SBS_MODE] == -1) {
@@ -2187,28 +2144,4 @@ int LiSendEmptyPayload() {
         ENET_PACKET_FLAG_RELIABLE,
         false
     );
-}
-
-int LiSendSetSbsProfile(const char* profile) {
-    size_t length;
-    if (packetTypes == NULL || stopping || profile == NULL ||
-            packetTypes[IDX_SET_SBS_PROFILE] == -1) {
-        return -1;
-    }
-    length = strlen(profile);
-    if (length == 0 || length > 64) {
-        return -1;
-    }
-    return sendMessageAndForget(
-        packetTypes[IDX_SET_SBS_PROFILE],
-        (int)length,
-        (void*)profile,
-        CTRL_CHANNEL_SERVERCTL,
-        ENET_PACKET_FLAG_RELIABLE,
-        false
-    );
-}
-
-int LiRequestSbsProfiles(void) {
-    return LiSendSetSbsProfile("?");
 }
