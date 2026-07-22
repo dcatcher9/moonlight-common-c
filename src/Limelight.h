@@ -571,9 +571,6 @@ const char* LiGetStageName(int stage);
 // This function may only be called between LiStartConnection() and LiStopConnection().
 bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVariance);
 
-// This function sends a request to the server to execute the requested cmd id.
-int LiSendExecServerCmd(uint8_t cmdId);
-
 // Host-side SBS modes carried by LiSendSetSbsMode (Apollo protocol extension).
 #define SBS_MODE_OFF 0 // No host depth; host emits a plain W x H frame.
 #define SBS_MODE_AI  1 // Enable the host's startup-profile pipeline; host emits 2W x H.
