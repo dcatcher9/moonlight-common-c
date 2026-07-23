@@ -26,13 +26,13 @@ static bool receivedFullFrame;
 #define RTP_QUEUE_DELAY 10
 
 // This is the desired number of video packets that can be
-// stored in the socket's receive buffer. 2048 is chosen
-// because it should be large enough for all reasonable
-// frame sizes (probably 2 or 3 frames) without using too
-// much kernel memory with larger packet sizes. It also
-// can smooth over transient pauses in network traffic
-// and subsequent packet/frame bursts that follow.
-#define RTP_RECV_PACKETS_BUFFERED 2048
+// stored in the socket's receive buffer. High-bitrate 4K movie
+// streams can arrive in large per-frame bursts, so keep enough
+// capacity to drain UDP while the decoder thread briefly stalls.
+// On Linux, SO_RCVBUF accounting is typically reported as twice
+// the requested size; 4096 packets remains below the Galaxy XR's
+// observed 16 MiB receive-buffer ceiling.
+#define RTP_RECV_PACKETS_BUFFERED 4096
 
 // Initialize the video stream
 void initializeVideoStream(void) {

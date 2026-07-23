@@ -31,6 +31,20 @@ static unsigned int consecutiveFrameDrops;
 
 static LINKED_BLOCKING_QUEUE decodeUnitQueue;
 
+// Buffered submission must absorb short codec stalls without allowing a stale-video cliff.
+// Bound the queue to roughly 75 ms of video, with practical limits for low/high frame rates.
+static int getDecodeUnitQueueLimit(void) {
+    int frameLimit = (StreamConfig.fps * 75 + 999) / 1000;
+
+    if (frameLimit < 3) {
+        return 3;
+    }
+    if (frameLimit > 8) {
+        return 8;
+    }
+    return frameLimit;
+}
+
 typedef struct _BUFFER_DESC {
     char* data;
     unsigned int offset;
@@ -59,7 +73,7 @@ typedef struct _LENTRY_INTERNAL {
 
 // Init
 void initializeVideoDepacketizer(int pktSize) {
-    LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, 15);
+    LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, getDecodeUnitQueueLimit());
 
     nextFrameNumber = 1;
     startFrameNumber = 0;

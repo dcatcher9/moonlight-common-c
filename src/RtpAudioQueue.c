@@ -1,9 +1,10 @@
 #include "Limelight-internal.h"
 
-#if defined(LC_DEBUG) && !defined(LC_FUZZING)
+#if defined(LC_DEBUG) && defined(LC_FEC_VALIDATION) && !defined(LC_FUZZING)
 // This enables FEC validation mode with a synthetic drop
 // and recovered packet checks vs the original input. It
-// is on by default for debug builds.
+// is deliberately opt-in because debug APKs are used for
+// live transport and performance validation.
 //
 // NB: Unlike the video FEC feature of the same name, this
 // is much more restrictive in terms of when the validation
@@ -12,7 +13,6 @@
 // trigger the call to completeFecBlock(). Missing or OOO
 // packets will do the job.
 #define FEC_VALIDATION_MODE
-#define FEC_VERBOSE
 #endif
 
 #define RTP_PAYLOAD_TYPE_AUDIO   97

@@ -1,12 +1,12 @@
 #include "Limelight-internal.h"
 #include "rs.h"
 
-#if defined(LC_DEBUG) && !defined(LC_FUZZING)
+#if defined(LC_DEBUG) && defined(LC_FEC_VALIDATION) && !defined(LC_FUZZING)
 // This enables FEC validation mode with a synthetic drop
-// and recovered packet checks vs the original input. It
-// is on by default for debug builds.
+// and recovered packet checks vs the original input. It is
+// deliberately opt-in because debug APKs are used for live
+// transport and performance validation.
 #define FEC_VALIDATION_MODE
-#define FEC_VERBOSE
 #endif
 
 // Don't try speculative RFI for 5 minutes after seeing
