@@ -484,6 +484,29 @@ typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r
 // phase 3 = initializing the device-specific 3D pipeline with an already-cached engine.
 typedef void(*ConnListenerDepthStatus)(uint8_t phase);
 
+// Video-mode acknowledgement statuses carried by ConnListenerVideoModeAck (Apollo extension).
+#define VIDEO_MODE_ACK_APPLIED                  0 // The requested mode is live on the host.
+#define VIDEO_MODE_ACK_REJECTED_INVALID         1 // Failed host validation; do not retry as-is.
+#define VIDEO_MODE_ACK_REJECTED_NEEDS_RECONNECT 2 // Valid, but only reachable by reconnecting.
+#define VIDEO_MODE_ACK_FAILED                   3 // Transient failure, attempted then rolled back.
+
+// This callback is invoked when the host answers a LiSendSetVideoMode() request (Apollo
+// extension). requestId is echoed verbatim from the request, and is the only correlation key:
+// drop any ack whose id does not match the outstanding request. status is one of
+// VIDEO_MODE_ACK_*.
+//
+// The applied* values report what the host is ACTUALLY running, which may legitimately differ
+// from the request — the host clamps an oversized width to the codec ceiling and scales height to
+// preserve aspect. A clamped apply is a SUCCESS: adopt the applied values as authoritative rather
+// than treating the difference as an error. appliedWidth/appliedHeight are BASE (per-eye) values
+// before any SBS doubling. appliedBitrateKbps is the host's post-budget ENCODER value, not the
+// requested total wire budget. On a refusal (status 1/2/3) the applied* values describe the mode
+// that remains in effect.
+typedef void(*ConnListenerVideoModeAck)(uint16_t requestId, uint16_t status,
+                                        uint16_t appliedWidth, uint16_t appliedHeight,
+                                        uint16_t appliedFramerateX100,
+                                        uint32_t appliedBitrateKbps);
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
     ConnListenerStageComplete stageComplete;
@@ -499,6 +522,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerSetControllerLED setControllerLED;
     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
     ConnListenerDepthStatus depthStatus;
+    ConnListenerVideoModeAck videoModeAck;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -585,6 +609,19 @@ int LiSendSetSbsMode(uint8_t mode);
 // (the 2D source, the depth map and the SBS result) to the host's configured debug dir.
 // For diagnosing 2D->3D reprojection artifacts. Returns -1 if the host lacks the extension.
 int LiSendSbsDebugDump(void);
+
+// This function asks the host (Apollo protocol extension) to change the live video mode
+// (resolution, frame rate and bitrate) without tearing down and re-establishing the stream.
+// framerateX100 is in hundredths of a Hz so fractional rates survive the wire (6000 = 60 fps,
+// 2997 = 29.97 fps). bitrateKbps is the total wire budget, using the same units and semantics
+// as the maximumBitrateKbps the client advertises in RTSP ANNOUNCE; the host applies its own
+// clamp and FEC/audio deduction. requestId is an opaque client correlation token echoed verbatim
+// in the resulting ConnListenerVideoModeAck; the host never interprets it. The host is
+// authoritative and may apply something different from the request.
+// Returns positive on successful enqueue, zero on send failure, or -1 if the host lacks the
+// extension.
+int LiSendSetVideoMode(uint16_t width, uint16_t height, uint16_t framerateX100,
+                       uint16_t requestId, uint32_t bitrateKbps);
 
 // This function sends an empty payload to the server.
 // This method exists here for workaround client side wifi sleeps.

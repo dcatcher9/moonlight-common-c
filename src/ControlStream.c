@@ -85,6 +85,17 @@ typedef struct _QUEUED_ASYNC_CALLBACK {
         struct {
             uint8_t phase;    // 0 idle/failure, 1 engine load/build, 2 ready, 3 pipeline init
         } depthStatus;
+        struct {
+            // requestId is echoed verbatim from the 0x3007 request; correlation is by id alone.
+            // The applied* fields report what the host is ACTUALLY running, which may legitimately
+            // differ from the request (e.g. a width clamped to the codec ceiling).
+            uint16_t requestId;
+            uint16_t status;  // 0 applied, 1 rejected_invalid, 2 rejected_needs_reconnect, 3 failed
+            uint16_t appliedWidth;
+            uint16_t appliedHeight;
+            uint16_t appliedFramerateX100;
+            uint32_t appliedBitrateKbps;
+        } videoModeAck;
     } data;
     LINKED_BLOCKING_QUEUE_ENTRY entry;
 } QUEUED_ASYNC_CALLBACK, *PQUEUED_ASYNC_CALLBACK;
@@ -145,6 +156,8 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_SET_SBS_MODE 13
 #define IDX_SBS_DEBUG_DUMP 14
 #define IDX_DEPTH_STATUS 15
+#define IDX_SET_VIDEO_MODE 16
+#define IDX_VIDEO_MODE_ACK 17
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -166,6 +179,8 @@ static const short packetTypesGen3[] = {
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Depth Status (unused)
+    -1,     // Set Video Mode (unused)
+    -1,     // Video Mode Ack (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -184,6 +199,8 @@ static const short packetTypesGen4[] = {
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Depth Status (unused)
+    -1,     // Set Video Mode (unused)
+    -1,     // Video Mode Ack (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -202,6 +219,8 @@ static const short packetTypesGen5[] = {
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Depth Status (unused)
+    -1,     // Set Video Mode (unused)
+    -1,     // Video Mode Ack (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -220,6 +239,8 @@ static const short packetTypesGen7[] = {
     -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Depth Status (unused)
+    -1,     // Set Video Mode (unused)
+    -1,     // Video Mode Ack (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -238,6 +259,8 @@ static const short packetTypesGen7Enc[] = {
     0x3003, // Set SBS Mode (Apollo protocol extension)
     0x3004, // SBS Debug Dump (Apollo protocol extension)
     0x3006, // Depth Status (Apollo protocol extension, host->client)
+    0x3007, // Set Video Mode (Apollo protocol extension)
+    0x3008, // Video Mode Ack (Apollo protocol extension, host->client)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -1017,6 +1040,17 @@ static void asyncCallbackThreadFunc(void* context) {
                 ListenerCallbacks.depthStatus(queuedCb->data.depthStatus.phase);
             }
             break;
+        case IDX_VIDEO_MODE_ACK:
+            // One per live video-mode request; not batchable.
+            if (ListenerCallbacks.videoModeAck != NULL) {
+                ListenerCallbacks.videoModeAck(queuedCb->data.videoModeAck.requestId,
+                                               queuedCb->data.videoModeAck.status,
+                                               queuedCb->data.videoModeAck.appliedWidth,
+                                               queuedCb->data.videoModeAck.appliedHeight,
+                                               queuedCb->data.videoModeAck.appliedFramerateX100,
+                                               queuedCb->data.videoModeAck.appliedBitrateKbps);
+            }
+            break;
         default:
             // Unhandled packet type from queueAsyncCallback()
             LC_ASSERT(false);
@@ -1034,7 +1068,8 @@ static bool needsAsyncCallback(unsigned short packetType) {
            packetType == packetTypes[IDX_SET_RGB_LED] ||
            packetType == packetTypes[IDX_HDR_INFO] ||
            packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
-           packetType == packetTypes[IDX_DEPTH_STATUS];
+           packetType == packetTypes[IDX_DEPTH_STATUS] ||
+           packetType == packetTypes[IDX_VIDEO_MODE_ACK];
 }
 
 static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
@@ -1098,6 +1133,17 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
     else if (ctlHdr->type == packetTypes[IDX_DEPTH_STATUS]) {
         BbGet8(&bb, &queuedCb->data.depthStatus.phase);
         queuedCb->typeIndex = IDX_DEPTH_STATUS;
+    }
+    else if (ctlHdr->type == packetTypes[IDX_VIDEO_MODE_ACK]) {
+        // 14-byte little-endian payload, parsed field-by-field because it is packed: the trailing
+        // u32 sits at offset 10 and is therefore intentionally unaligned.
+        BbGet16(&bb, &queuedCb->data.videoModeAck.requestId);
+        BbGet16(&bb, &queuedCb->data.videoModeAck.status);
+        BbGet16(&bb, &queuedCb->data.videoModeAck.appliedWidth);
+        BbGet16(&bb, &queuedCb->data.videoModeAck.appliedHeight);
+        BbGet16(&bb, &queuedCb->data.videoModeAck.appliedFramerateX100);
+        BbGet32(&bb, &queuedCb->data.videoModeAck.appliedBitrateKbps);
+        queuedCb->typeIndex = IDX_VIDEO_MODE_ACK;
     }
     else {
         // Unhandled packet type from needsAsyncCallback()
@@ -2092,6 +2138,44 @@ int LiSendSbsDebugDump(void) {
     }
     return sendMessageAndForget(
         packetTypes[IDX_SBS_DEBUG_DUMP],
+        sizeof(payload),
+        payload,
+        CTRL_CHANNEL_SERVERCTL,
+        ENET_PACKET_FLAG_RELIABLE,
+        false
+    );
+}
+
+// Ask the host (Apollo protocol extension) to change the live video mode without a reconnect.
+// The 12-byte little-endian payload is:
+//   u16 width, u16 height, u16 framerateX100, u16 requestId, u32 bitrateKbps
+// framerateX100 is hundredths of a Hz so fractional rates (2997 = 29.97) survive the wire.
+// bitrateKbps is the same total wire budget the client advertises in RTSP ANNOUNCE
+// maximumBitrateKbps; the host applies its own clamp and FEC/audio deduction.
+// requestId is an opaque client correlation token echoed verbatim in the 0x3008 ack; the host
+// never interprets it. The host may legitimately apply something different from the request
+// (for example clamping an oversized width to the codec ceiling), so the ack reports what was
+// ACTUALLY applied and correlation is by requestId rather than by the echoed values.
+// Returns positive on successful enqueue, zero on send failure, or -1 if unsupported.
+int LiSendSetVideoMode(uint16_t width, uint16_t height, uint16_t framerateX100,
+                       uint16_t requestId, uint32_t bitrateKbps) {
+    BYTE_BUFFER bb;
+    uint8_t payload[12];
+
+    if (packetTypes[IDX_SET_VIDEO_MODE] == -1) {
+        // Host doesn't support the Apollo video mode extension (non-Gen7Enc control stream).
+        return -1;
+    }
+
+    BbInitializeWrappedBuffer(&bb, (char*)payload, 0, sizeof(payload), BYTE_ORDER_LITTLE);
+    BbPut16(&bb, width);
+    BbPut16(&bb, height);
+    BbPut16(&bb, framerateX100);
+    BbPut16(&bb, requestId);
+    BbPut32(&bb, bitrateKbps);
+
+    return sendMessageAndForget(
+        packetTypes[IDX_SET_VIDEO_MODE],
         sizeof(payload),
         payload,
         CTRL_CHANNEL_SERVERCTL,
