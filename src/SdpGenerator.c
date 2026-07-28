@@ -268,7 +268,8 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
 
     if (IS_SUNSHINE()) {
         // Send client feature flags to Sunshine hosts
-        uint32_t moonlightFeatureFlags = ML_FF_FEC_STATUS | ML_FF_SESSION_ID_V1;
+        uint32_t moonlightFeatureFlags = ML_FF_FEC_STATUS | ML_FF_SESSION_ID_V1 |
+                                         ML_FF_HOST_SBS_TELEMETRY_V1;
         snprintf(payloadStr, sizeof(payloadStr), "%u", moonlightFeatureFlags);
         err |= addAttributeString(&optionHead, "x-ml-general.featureFlags", payloadStr);
 

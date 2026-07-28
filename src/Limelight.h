@@ -507,6 +507,12 @@ typedef void(*ConnListenerVideoModeAck)(uint16_t requestId, uint16_t status,
                                         uint16_t appliedFramerateX100,
                                         uint32_t appliedBitrateKbps);
 
+// Apollo host-SBS telemetry v1 is delivered as an exact 88-byte little-endian body. The public
+// callback deliberately preserves the wire body so higher-level clients have one versioned parser.
+#define HOST_SBS_TELEMETRY_STATE_SIZE 88
+typedef void(*ConnListenerHostSbsTelemetryState)(
+    const uint8_t payload[HOST_SBS_TELEMETRY_STATE_SIZE]);
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
     ConnListenerStageComplete stageComplete;
@@ -523,6 +529,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
     ConnListenerDepthStatus depthStatus;
     ConnListenerVideoModeAck videoModeAck;
+    ConnListenerHostSbsTelemetryState hostSbsTelemetryState;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -622,6 +629,13 @@ int LiSendSbsDebugDump(void);
 // extension.
 int LiSendSetVideoMode(uint16_t width, uint16_t height, uint16_t framerateX100,
                        uint16_t requestId, uint32_t bitrateKbps);
+
+// Subscribe to Apollo host-SBS telemetry. version is fixed at 1. enabled requests periodic state;
+// focused selects the faster diagnostic cadence. intervalMs is the requested cadence and requestId
+// correlates the direct acknowledgement. Subsequent periodic state bodies use requestId zero.
+// Returns -1 when the host did not advertise LI_FF_HOST_SBS_TELEMETRY_V1.
+int LiSendHostSbsTelemetrySubscription(bool enabled, bool focused,
+                                       uint16_t requestId, uint16_t intervalMs);
 
 // This function sends an empty payload to the server.
 // This method exists here for workaround client side wifi sleeps.
@@ -1025,6 +1039,7 @@ void LiRequestIdrFrame(void);
 // This function returns any extended feature flags supported by the host.
 #define LI_FF_PEN_TOUCH_EVENTS        0x01 // LiSendTouchEvent()/LiSendPenEvent() supported
 #define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported
+#define LI_FF_HOST_SBS_TELEMETRY_V1   0x40000000 // Apollo host SBS telemetry v1
 uint32_t LiGetHostFeatureFlags(void);
 
 #ifdef __cplusplus

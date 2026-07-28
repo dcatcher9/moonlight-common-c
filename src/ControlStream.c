@@ -96,6 +96,9 @@ typedef struct _QUEUED_ASYNC_CALLBACK {
             uint16_t appliedFramerateX100;
             uint32_t appliedBitrateKbps;
         } videoModeAck;
+        struct {
+            uint8_t payload[HOST_SBS_TELEMETRY_STATE_SIZE];
+        } hostSbsTelemetryState;
     } data;
     LINKED_BLOCKING_QUEUE_ENTRY entry;
 } QUEUED_ASYNC_CALLBACK, *PQUEUED_ASYNC_CALLBACK;
@@ -158,6 +161,8 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_DEPTH_STATUS 15
 #define IDX_SET_VIDEO_MODE 16
 #define IDX_VIDEO_MODE_ACK 17
+#define IDX_HOST_SBS_TELEMETRY_SUBSCRIBE 18
+#define IDX_HOST_SBS_TELEMETRY_STATE 19
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -181,6 +186,8 @@ static const short packetTypesGen3[] = {
     -1,     // Depth Status (unused)
     -1,     // Set Video Mode (unused)
     -1,     // Video Mode Ack (unused)
+    -1,     // Host SBS Telemetry Subscribe (unused)
+    -1,     // Host SBS Telemetry State (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -201,6 +208,8 @@ static const short packetTypesGen4[] = {
     -1,     // Depth Status (unused)
     -1,     // Set Video Mode (unused)
     -1,     // Video Mode Ack (unused)
+    -1,     // Host SBS Telemetry Subscribe (unused)
+    -1,     // Host SBS Telemetry State (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -221,6 +230,8 @@ static const short packetTypesGen5[] = {
     -1,     // Depth Status (unused)
     -1,     // Set Video Mode (unused)
     -1,     // Video Mode Ack (unused)
+    -1,     // Host SBS Telemetry Subscribe (unused)
+    -1,     // Host SBS Telemetry State (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -241,6 +252,8 @@ static const short packetTypesGen7[] = {
     -1,     // Depth Status (unused)
     -1,     // Set Video Mode (unused)
     -1,     // Video Mode Ack (unused)
+    -1,     // Host SBS Telemetry Subscribe (unused)
+    -1,     // Host SBS Telemetry State (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -261,6 +274,8 @@ static const short packetTypesGen7Enc[] = {
     0x3006, // Depth Status (Apollo protocol extension, host->client)
     0x3007, // Set Video Mode (Apollo protocol extension)
     0x3008, // Video Mode Ack (Apollo protocol extension, host->client)
+    0x3009, // Host SBS Telemetry Subscribe (Apollo protocol extension)
+    0x300A, // Host SBS Telemetry State (Apollo protocol extension, host->client)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -1051,6 +1066,22 @@ static void asyncCallbackThreadFunc(void* context) {
                                                queuedCb->data.videoModeAck.appliedBitrateKbps);
             }
             break;
+        case IDX_HOST_SBS_TELEMETRY_STATE:
+            // Telemetry is replaceable state. Collapse adjacent samples so a briefly delayed
+            // callback consumer never walks through an obsolete high-frequency backlog.
+            while (LbqPeekQueueElement(&asyncCallbackQueue, (void**)&nextCb) == LBQ_SUCCESS &&
+                    nextCb->typeIndex == queuedCb->typeIndex) {
+                if (LbqPollQueueElement(&asyncCallbackQueue, (void**)&nextCb) != LBQ_SUCCESS) {
+                    break;
+                }
+                free(queuedCb);
+                queuedCb = nextCb;
+            }
+            if (ListenerCallbacks.hostSbsTelemetryState != NULL) {
+                ListenerCallbacks.hostSbsTelemetryState(
+                    queuedCb->data.hostSbsTelemetryState.payload);
+            }
+            break;
         default:
             // Unhandled packet type from queueAsyncCallback()
             LC_ASSERT(false);
@@ -1069,7 +1100,8 @@ static bool needsAsyncCallback(unsigned short packetType) {
            packetType == packetTypes[IDX_HDR_INFO] ||
            packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
            packetType == packetTypes[IDX_DEPTH_STATUS] ||
-           packetType == packetTypes[IDX_VIDEO_MODE_ACK];
+           packetType == packetTypes[IDX_VIDEO_MODE_ACK] ||
+           packetType == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE];
 }
 
 static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
@@ -1078,6 +1110,12 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
     int err;
 
     LC_ASSERT(needsAsyncCallback(ctlHdr->type));
+
+    if (ctlHdr->type == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE] &&
+            packetLength != (int)(sizeof(*ctlHdr) + HOST_SBS_TELEMETRY_STATE_SIZE)) {
+        Limelog("Dropping malformed host SBS telemetry state: %d-byte packet\n", packetLength);
+        return;
+    }
 
     queuedCb = malloc(sizeof(*queuedCb));
     if (!queuedCb) {
@@ -1144,6 +1182,11 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
         BbGet16(&bb, &queuedCb->data.videoModeAck.appliedFramerateX100);
         BbGet32(&bb, &queuedCb->data.videoModeAck.appliedBitrateKbps);
         queuedCb->typeIndex = IDX_VIDEO_MODE_ACK;
+    }
+    else if (ctlHdr->type == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE]) {
+        BbGetBytes(&bb, queuedCb->data.hostSbsTelemetryState.payload,
+                   HOST_SBS_TELEMETRY_STATE_SIZE);
+        queuedCb->typeIndex = IDX_HOST_SBS_TELEMETRY_STATE;
     }
     else {
         // Unhandled packet type from needsAsyncCallback()
@@ -2176,6 +2219,34 @@ int LiSendSetVideoMode(uint16_t width, uint16_t height, uint16_t framerateX100,
 
     return sendMessageAndForget(
         packetTypes[IDX_SET_VIDEO_MODE],
+        sizeof(payload),
+        payload,
+        CTRL_CHANNEL_SERVERCTL,
+        ENET_PACKET_FLAG_RELIABLE,
+        false
+    );
+}
+
+int LiSendHostSbsTelemetrySubscription(bool enabled, bool focused,
+                                       uint16_t requestId, uint16_t intervalMs) {
+    BYTE_BUFFER bb;
+    uint8_t payload[8];
+    uint8_t flags = (enabled ? 0x01 : 0x00) | (focused ? 0x02 : 0x00);
+
+    if (!(SunshineFeatureFlags & LI_FF_HOST_SBS_TELEMETRY_V1) ||
+            packetTypes[IDX_HOST_SBS_TELEMETRY_SUBSCRIBE] == -1) {
+        return -1;
+    }
+
+    BbInitializeWrappedBuffer(&bb, (char*)payload, 0, sizeof(payload), BYTE_ORDER_LITTLE);
+    BbPut8(&bb, 1); // protocol version
+    BbPut8(&bb, flags);
+    BbPut16(&bb, requestId);
+    BbPut16(&bb, intervalMs);
+    BbPut16(&bb, 0); // reserved
+
+    return sendMessageAndForget(
+        packetTypes[IDX_HOST_SBS_TELEMETRY_SUBSCRIBE],
         sizeof(payload),
         payload,
         CTRL_CHANNEL_SERVERCTL,
