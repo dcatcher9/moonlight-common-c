@@ -79,7 +79,16 @@ void LbqSignalQueueUserWake(PLINKED_BLOCKING_QUEUE queueHead) {
 }
 
 int LbqGetItemCount(PLINKED_BLOCKING_QUEUE queueHead) {
-    return queueHead->currentSize;
+    int itemCount;
+
+    // currentSize is written while holding this mutex. Reading it without the
+    // same synchronization is a data race and can make input senders miss a
+    // packet which is already queued behind the current packet.
+    PltLockMutex(&queueHead->mutex);
+    itemCount = queueHead->currentSize;
+    PltUnlockMutex(&queueHead->mutex);
+
+    return itemCount;
 }
 
 int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOCKING_QUEUE_ENTRY entry) {

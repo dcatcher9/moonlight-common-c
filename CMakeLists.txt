@@ -81,3 +81,16 @@ target_include_directories(moonlight-common-c PRIVATE
 )
 
 target_compile_definitions(moonlight-common-c PRIVATE HAS_SOCKLEN_T)
+
+option(LC_BUILD_INPUT_STREAM_TESTS "Build input stream ordering tests" OFF)
+if(LC_BUILD_INPUT_STREAM_TESTS)
+  enable_testing()
+  target_compile_definitions(moonlight-common-c PRIVATE LC_INPUT_STREAM_TEST)
+  if(WIN32)
+    set_target_properties(moonlight-common-c PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  endif()
+  add_executable(input-stream-order-test tests/InputStreamOrderTest.c)
+  target_include_directories(input-stream-order-test PRIVATE tests)
+  target_link_libraries(input-stream-order-test PRIVATE moonlight-common-c)
+  add_test(NAME input-stream-order-test COMMAND input-stream-order-test)
+endif()
