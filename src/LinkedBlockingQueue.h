@@ -30,6 +30,8 @@ typedef struct _LINKED_BLOCKING_QUEUE {
 
 int LbqInitializeLinkedBlockingQueue(PLINKED_BLOCKING_QUEUE queueHead, int sizeBound);
 int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOCKING_QUEUE_ENTRY entry);
+int LbqOfferQueueItemWithHeadEviction(PLINKED_BLOCKING_QUEUE queueHead, void* data,
+                                      PLINKED_BLOCKING_QUEUE_ENTRY entry, void** evictedData);
 int LbqWaitForQueueElement(PLINKED_BLOCKING_QUEUE queueHead, void** data);
 int LbqPollQueueElement(PLINKED_BLOCKING_QUEUE queueHead, void** data);
 int LbqPeekQueueElement(PLINKED_BLOCKING_QUEUE queueHead, void** data);

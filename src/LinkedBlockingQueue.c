@@ -91,11 +91,17 @@ int LbqGetItemCount(PLINKED_BLOCKING_QUEUE queueHead) {
     return itemCount;
 }
 
-int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOCKING_QUEUE_ENTRY entry) {
+static int offerQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data,
+                          PLINKED_BLOCKING_QUEUE_ENTRY entry, bool evictHead,
+                          void** evictedData) {
+    PLINKED_BLOCKING_QUEUE_ENTRY evictedEntry = NULL;
     bool wasEmpty;
-    
+
     entry->flink = NULL;
     entry->data = data;
+    if (evictedData != NULL) {
+        *evictedData = NULL;
+    }
 
     PltLockMutex(&queueHead->mutex);
 
@@ -104,13 +110,29 @@ int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOC
         return LBQ_INTERRUPTED;
     }
 
-    if (queueHead->currentSize == queueHead->sizeBound) {
-        PltUnlockMutex(&queueHead->mutex);
-        return LBQ_BOUND_EXCEEDED;
+    wasEmpty = queueHead->head == NULL;
+
+    if (queueHead->sizeBound > 0 && queueHead->currentSize == queueHead->sizeBound) {
+        if (!evictHead) {
+            PltUnlockMutex(&queueHead->mutex);
+            return LBQ_BOUND_EXCEEDED;
+        }
+
+        evictedEntry = queueHead->head;
+        LC_ASSERT(evictedEntry != NULL);
+
+        queueHead->head = evictedEntry->flink;
+        queueHead->currentSize--;
+        if (queueHead->head == NULL) {
+            LC_ASSERT(queueHead->currentSize == 0);
+            queueHead->tail = NULL;
+        }
+        else {
+            queueHead->head->blink = NULL;
+        }
     }
 
-    wasEmpty = queueHead->head == NULL;
-    if (wasEmpty) {
+    if (queueHead->head == NULL) {
         LC_ASSERT(queueHead->currentSize == 0);
         LC_ASSERT(queueHead->tail == NULL);
         queueHead->head = entry;
@@ -119,7 +141,7 @@ int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOC
     }
     else {
         LC_ASSERT(queueHead->currentSize >= 1);
-        LC_ASSERT(queueHead->head != NULL);
+        LC_ASSERT(queueHead->tail != NULL);
         queueHead->tail->flink = entry;
         entry->blink = queueHead->tail;
         queueHead->tail = entry;
@@ -127,16 +149,29 @@ int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOC
 
     queueHead->currentSize++;
     queueHead->lifetimeSize++;
+    if (evictedEntry != NULL && evictedData != NULL) {
+        *evictedData = evictedEntry->data;
+    }
 
     PltUnlockMutex(&queueHead->mutex);
 
     if (wasEmpty) {
-        // Only call PltSignalConditionVariable() when transitioning from
-        // empty -> non-empty to avoid a useless syscall for each new entry.
         PltSignalConditionVariable(&queueHead->cond);
     }
 
     return LBQ_SUCCESS;
+}
+
+int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOCKING_QUEUE_ENTRY entry) {
+    return offerQueueItem(queueHead, data, entry, false, NULL);
+}
+
+// Atomically append an item, evicting only the oldest item if the queue is full.
+// The caller owns evictedData and must release it after this function returns.
+int LbqOfferQueueItemWithHeadEviction(PLINKED_BLOCKING_QUEUE queueHead, void* data,
+                                      PLINKED_BLOCKING_QUEUE_ENTRY entry, void** evictedData) {
+    LC_ASSERT(evictedData != NULL);
+    return offerQueueItem(queueHead, data, entry, true, evictedData);
 }
 
 // This must be synchronized with LbqFlushQueueItems by the caller

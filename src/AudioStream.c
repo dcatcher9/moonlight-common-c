@@ -18,6 +18,10 @@ static bool pingThreadStarted;
 static bool receivedDataFromPeer;
 static uint64_t firstReceiveTime;
 
+static uint32_t decoderQueueEvictedPackets;
+static uint32_t decoderQueueSaturationPeriods;
+static bool decoderQueueSaturated;
+
 #ifdef LC_DEBUG
 #define INVALID_OPUS_HEADER 0x00
 static uint8_t opusHeaderByte;
@@ -72,6 +76,9 @@ int initializeAudioStream(void) {
     receivedDataFromPeer = false;
     pingThreadStarted = false;
     firstReceiveTime = 0;
+    decoderQueueEvictedPackets = 0;
+    decoderQueueSaturationPeriods = 0;
+    decoderQueueSaturated = false;
     audioDecryptionCtx = PltCreateCryptoContext();
 #ifdef LC_DEBUG
     opusHeaderByte = INVALID_OPUS_HEADER;
@@ -140,23 +147,33 @@ void destroyAudioStream(void) {
 }
 
 static bool queuePacketToLbq(PQUEUED_AUDIO_PACKET* packet) {
-    int err;
+    PQUEUED_AUDIO_PACKET evictedPacket;
+    int err = LbqOfferQueueItemWithHeadEviction(&packetQueue,
+                                                *packet,
+                                                &(*packet)->header.lentry,
+                                                (void**)&evictedPacket);
+    if (err != LBQ_SUCCESS) {
+        return false;
+    }
 
-    do {
-        err = LbqOfferQueueItem(&packetQueue, *packet, &(*packet)->header.lentry);
-        if (err == LBQ_SUCCESS) {
-            // The LBQ owns the buffer now
-            *packet = NULL;
+    // The LBQ owns the submitted buffer now.
+    *packet = NULL;
+
+    if (evictedPacket != NULL) {
+        decoderQueueEvictedPackets++;
+        if (!decoderQueueSaturated) {
+            decoderQueueSaturationPeriods++;
+            decoderQueueSaturated = true;
         }
-        else if (err == LBQ_BOUND_EXCEEDED) {
-            Limelog("Audio packet queue overflow\n");
 
-            // The audio queue is full, so free all existing items and try again
-            freePacketList(LbqFlushQueueItems(&packetQueue));
-        }
-    } while (err == LBQ_BOUND_EXCEEDED);
+        // Retain the newest bounded window instead of flushing the whole queue.
+        free(evictedPacket);
+    }
+    else {
+        decoderQueueSaturated = false;
+    }
 
-    return err == LBQ_SUCCESS;
+    return true;
 }
 
 static void decodeInputData(PQUEUED_AUDIO_PACKET packet) {
@@ -414,6 +431,16 @@ void stopAudioStream(void) {
     PltJoinThread(&receiveThread);
     if ((AudioCallbacks.capabilities & CAPABILITY_DIRECT_SUBMIT) == 0) {
         PltJoinThread(&decoderThread);
+    }
+
+    if (decoderQueueEvictedPackets != 0) {
+        Limelog("Audio decoder backlog evicted %u stale packet%s across %u saturation period%s "
+                "(queue bound: %d ms)\n",
+                decoderQueueEvictedPackets,
+                decoderQueueEvictedPackets == 1 ? "" : "s",
+                decoderQueueSaturationPeriods,
+                decoderQueueSaturationPeriods == 1 ? "" : "s",
+                packetQueue.sizeBound * AudioPacketDuration);
     }
 
     AudioCallbacks.cleanup();
