@@ -86,22 +86,29 @@ typedef struct _QUEUED_ASYNC_CALLBACK {
             uint8_t phase;    // 0 idle/failure, 1 engine load/build, 2 ready, 3 pipeline init
         } depthStatus;
         struct {
-            // requestId is echoed verbatim from the 0x3007 request; correlation is by id alone.
-            // The applied* fields report what the host is ACTUALLY running, which may legitimately
-            // differ from the request (e.g. a width clamped to the codec ceiling).
-            uint16_t requestId;
-            uint16_t status;  // 0 applied, 1 rejected_invalid, 2 rejected_needs_reconnect, 3 failed
-            uint16_t appliedWidth;
-            uint16_t appliedHeight;
-            uint16_t appliedFramerateX100;
-            uint32_t appliedBitrateKbps;
-        } videoModeAck;
-        struct {
             uint8_t payload[HOST_SBS_TELEMETRY_STATE_SIZE];
         } hostSbsTelemetryState;
     } data;
     LINKED_BLOCKING_QUEUE_ENTRY entry;
 } QUEUED_ASYNC_CALLBACK, *PQUEUED_ASYNC_CALLBACK;
+
+// Presentation ACKs are correctness-critical and must never contend with replaceable telemetry,
+// rumble, or other best-effort callbacks. The presenter permits only one outstanding request, so
+// this dedicated queue's bound is a fault-containment limit rather than a normal drop policy.
+typedef struct _QUEUED_PRESENTATION_ACK {
+    uint8_t status;
+    uint8_t appliedMode;
+    uint8_t flags;
+    uint32_t requestId;
+    uint32_t stateGeneration;
+    uint16_t appliedSourceWidth;
+    uint16_t appliedSourceHeight;
+    uint16_t exactEncodedWidth;
+    uint16_t exactEncodedHeight;
+    uint32_t appliedFramerateX100;
+    uint32_t effectiveEncoderBitrateKbps;
+    LINKED_BLOCKING_QUEUE_ENTRY entry;
+} QUEUED_PRESENTATION_ACK, *PQUEUED_PRESENTATION_ACK;
 
 static SOCKET ctlSock = INVALID_SOCKET;
 static ENetHost* client;
@@ -114,6 +121,7 @@ static PLT_THREAD invalidateRefFramesThread;
 static PLT_THREAD requestIdrFrameThread;
 static PLT_THREAD controlReceiveThread;
 static PLT_THREAD asyncCallbackThread;
+static PLT_THREAD presentationAckThread;
 static uint32_t lastGoodFrame;
 static uint32_t lastSeenFrame;
 static bool stopping;
@@ -133,6 +141,7 @@ static uint64_t firstFrameTimeMs;
 static LINKED_BLOCKING_QUEUE invalidReferenceFrameTuples;
 static LINKED_BLOCKING_QUEUE frameFecStatusQueue;
 static LINKED_BLOCKING_QUEUE asyncCallbackQueue;
+static LINKED_BLOCKING_QUEUE presentationAckQueue;
 static PLT_EVENT idrFrameRequiredEvent;
 
 static PPLT_CRYPTO_CONTEXT encryptionCtx;
@@ -156,16 +165,17 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_SET_MOTION_EVENT 10
 #define IDX_SET_RGB_LED 11
 #define IDX_DS_ADAPTIVE_TRIGGERS 12
-#define IDX_SET_SBS_MODE 13
-#define IDX_SBS_DEBUG_DUMP 14
-#define IDX_DEPTH_STATUS 15
-#define IDX_SET_VIDEO_MODE 16
-#define IDX_VIDEO_MODE_ACK 17
-#define IDX_HOST_SBS_TELEMETRY_SUBSCRIBE 18
-#define IDX_HOST_SBS_TELEMETRY_STATE 19
+#define IDX_SBS_DEBUG_DUMP 13
+#define IDX_DEPTH_STATUS 14
+#define IDX_SET_VIDEO_MODE 15
+#define IDX_VIDEO_MODE_ACK 16
+#define IDX_HOST_SBS_TELEMETRY_SUBSCRIBE 17
+#define IDX_HOST_SBS_TELEMETRY_STATE 18
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
+#define PRESENTATION_ACK_QUEUE_BOUND 8
+#define VIDEO_MODE_ACK_V2_PAYLOAD_SIZE 28
 
 static const short packetTypesGen3[] = {
     0x1407, // Request IDR frame
@@ -181,7 +191,6 @@ static const short packetTypesGen3[] = {
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
-    -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Depth Status (unused)
     -1,     // Set Video Mode (unused)
@@ -203,7 +212,6 @@ static const short packetTypesGen4[] = {
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
-    -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Depth Status (unused)
     -1,     // Set Video Mode (unused)
@@ -225,7 +233,6 @@ static const short packetTypesGen5[] = {
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
-    -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Depth Status (unused)
     -1,     // Set Video Mode (unused)
@@ -247,7 +254,6 @@ static const short packetTypesGen7[] = {
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
-    -1,     // Set SBS Mode (unused)
     -1,     // SBS Debug Dump (unused)
     -1,     // Depth Status (unused)
     -1,     // Set Video Mode (unused)
@@ -269,7 +275,6 @@ static const short packetTypesGen7Enc[] = {
     0x5501, // Set motion event (Sunshine protocol extension)
     0x5502, // Set RGB LED (Sunshine protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
-    0x3003, // Set SBS Mode (Apollo protocol extension)
     0x3004, // SBS Debug Dump (Apollo protocol extension)
     0x3006, // Depth Status (Apollo protocol extension, host->client)
     0x3007, // Set Video Mode (Apollo protocol extension)
@@ -366,6 +371,7 @@ int initializeControlStream(void) {
     LbqInitializeLinkedBlockingQueue(&invalidReferenceFrameTuples, 20);
     LbqInitializeLinkedBlockingQueue(&frameFecStatusQueue, 8); // Limits number of frame status reports per periodic ping interval
     LbqInitializeLinkedBlockingQueue(&asyncCallbackQueue, 30);
+    LbqInitializeLinkedBlockingQueue(&presentationAckQueue, PRESENTATION_ACK_QUEUE_BOUND);
     PltCreateMutex(&enetMutex);
 
     encryptedControlStream = APP_VERSION_AT_LEAST(7, 1, 431);
@@ -441,6 +447,7 @@ void destroyControlStream(void) {
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&invalidReferenceFrameTuples));
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&frameFecStatusQueue));
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&asyncCallbackQueue));
+    freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&presentationAckQueue));
 
     PltDeleteMutex(&enetMutex);
 }
@@ -943,6 +950,29 @@ static int ignoreDisconnectIntercept(ENetHost* host, ENetEvent* event) {
     return 0;
 }
 
+static void presentationAckThreadFunc(void* context) {
+    PQUEUED_PRESENTATION_ACK ack;
+
+    while (LbqWaitForQueueElement(&presentationAckQueue, (void**)&ack) == LBQ_SUCCESS) {
+        if (ListenerCallbacks.videoModeAckV2 != NULL) {
+            ListenerCallbacks.videoModeAckV2(
+                ack->status,
+                ack->appliedMode,
+                ack->flags,
+                ack->requestId,
+                ack->stateGeneration,
+                ack->appliedSourceWidth,
+                ack->appliedSourceHeight,
+                ack->exactEncodedWidth,
+                ack->exactEncodedHeight,
+                ack->appliedFramerateX100,
+                ack->effectiveEncoderBitrateKbps);
+        }
+
+        free(ack);
+    }
+}
+
 static void asyncCallbackThreadFunc(void* context) {
     PQUEUED_ASYNC_CALLBACK queuedCb, nextCb;
 
@@ -1055,17 +1085,6 @@ static void asyncCallbackThreadFunc(void* context) {
                 ListenerCallbacks.depthStatus(queuedCb->data.depthStatus.phase);
             }
             break;
-        case IDX_VIDEO_MODE_ACK:
-            // One per live video-mode request; not batchable.
-            if (ListenerCallbacks.videoModeAck != NULL) {
-                ListenerCallbacks.videoModeAck(queuedCb->data.videoModeAck.requestId,
-                                               queuedCb->data.videoModeAck.status,
-                                               queuedCb->data.videoModeAck.appliedWidth,
-                                               queuedCb->data.videoModeAck.appliedHeight,
-                                               queuedCb->data.videoModeAck.appliedFramerateX100,
-                                               queuedCb->data.videoModeAck.appliedBitrateKbps);
-            }
-            break;
         case IDX_HOST_SBS_TELEMETRY_STATE:
             // Telemetry is replaceable state. Collapse adjacent samples so a briefly delayed
             // callback consumer never walks through an obsolete high-frequency backlog.
@@ -1100,8 +1119,60 @@ static bool needsAsyncCallback(unsigned short packetType) {
            packetType == packetTypes[IDX_HDR_INFO] ||
            packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
            packetType == packetTypes[IDX_DEPTH_STATUS] ||
-           packetType == packetTypes[IDX_VIDEO_MODE_ACK] ||
            packetType == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE];
+}
+
+static void queuePresentationAck(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
+    BYTE_BUFFER bb;
+    PQUEUED_PRESENTATION_ACK ack;
+    int payloadLength = packetLength - sizeof(*ctlHdr);
+    int err;
+    uint8_t version;
+
+    if (payloadLength != VIDEO_MODE_ACK_V2_PAYLOAD_SIZE) {
+        Limelog("Malformed video-mode ACK has a %d-byte payload; terminating connection\n",
+                payloadLength);
+        ListenerCallbacks.connectionTerminated(-1);
+        return;
+    }
+
+    ack = calloc(1, sizeof(*ack));
+    if (ack == NULL) {
+        Limelog("Unable to allocate critical video-mode ACK; terminating connection\n");
+        ListenerCallbacks.connectionTerminated(-1);
+        return;
+    }
+
+    BbInitializeWrappedBuffer(&bb, (char*)ctlHdr, sizeof(*ctlHdr), payloadLength,
+                              BYTE_ORDER_LITTLE);
+    BbGet8(&bb, &version);
+    if (version != PRESENTATION_MODE_ACK_V2_VERSION) {
+        Limelog("Video-mode ACK has unsupported version %u; terminating connection\n",
+                version);
+        free(ack);
+        ListenerCallbacks.connectionTerminated(-1);
+        return;
+    }
+    BbGet8(&bb, &ack->status);
+    BbGet8(&bb, &ack->appliedMode);
+    BbGet8(&bb, &ack->flags);
+    BbGet32(&bb, &ack->requestId);
+    BbGet32(&bb, &ack->stateGeneration);
+    BbGet16(&bb, &ack->appliedSourceWidth);
+    BbGet16(&bb, &ack->appliedSourceHeight);
+    BbGet16(&bb, &ack->exactEncodedWidth);
+    BbGet16(&bb, &ack->exactEncodedHeight);
+    BbGet32(&bb, &ack->appliedFramerateX100);
+    BbGet32(&bb, &ack->effectiveEncoderBitrateKbps);
+
+    err = LbqOfferQueueItem(&presentationAckQueue, ack, &ack->entry);
+    if (err != LBQ_SUCCESS) {
+        // There is one application request in flight. Overflow therefore indicates a broken or
+        // hostile peer; terminate rather than silently losing a state-authority message.
+        Limelog("Critical video-mode ACK queue overflowed: %d; terminating connection\n", err);
+        free(ack);
+        ListenerCallbacks.connectionTerminated(-1);
+    }
 }
 
 static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
@@ -1171,17 +1242,6 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
     else if (ctlHdr->type == packetTypes[IDX_DEPTH_STATUS]) {
         BbGet8(&bb, &queuedCb->data.depthStatus.phase);
         queuedCb->typeIndex = IDX_DEPTH_STATUS;
-    }
-    else if (ctlHdr->type == packetTypes[IDX_VIDEO_MODE_ACK]) {
-        // 14-byte little-endian payload, parsed field-by-field because it is packed: the trailing
-        // u32 sits at offset 10 and is therefore intentionally unaligned.
-        BbGet16(&bb, &queuedCb->data.videoModeAck.requestId);
-        BbGet16(&bb, &queuedCb->data.videoModeAck.status);
-        BbGet16(&bb, &queuedCb->data.videoModeAck.appliedWidth);
-        BbGet16(&bb, &queuedCb->data.videoModeAck.appliedHeight);
-        BbGet16(&bb, &queuedCb->data.videoModeAck.appliedFramerateX100);
-        BbGet32(&bb, &queuedCb->data.videoModeAck.appliedBitrateKbps);
-        queuedCb->typeIndex = IDX_VIDEO_MODE_ACK;
     }
     else if (ctlHdr->type == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE]) {
         BbGetBytes(&bb, queuedCb->data.hostSbsTelemetryState.payload,
@@ -1393,8 +1453,20 @@ static void controlReceiveThreadFunc(void* context) {
                 hdrEnabled = (enableByte != 0);
             }
 
-            // Process client callbacks in a separate thread
-            if (needsAsyncCallback(ctlHdr->type)) {
+            // Presentation ACKs carry authoritative state and have their own bounded queue/thread
+            // so replaceable telemetry and controller callbacks cannot delay or drop them.
+            if (ctlHdr->type == packetTypes[IDX_VIDEO_MODE_ACK]) {
+                if (!(SunshineFeatureFlags & LI_FF_ATOMIC_PRESENTATION_MODE_V2)) {
+                    // 0x3008 is an Apollo extension only after mutual feature negotiation. An
+                    // upstream host may independently use this otherwise unknown type, so do not
+                    // interpret it as authoritative presentation state.
+                    Limelog("Ignoring unsolicited video-mode ACK without atomic-v2 negotiation\n");
+                }
+                else {
+                    queuePresentationAck(ctlHdr, packetLength);
+                }
+            }
+            else if (needsAsyncCallback(ctlHdr->type)) {
                 queueAsyncCallback(ctlHdr, packetLength);
             }
             else if (ctlHdr->type == packetTypes[IDX_TERMINATION]) {
@@ -1713,6 +1785,7 @@ int stopControlStream(void) {
     LbqSignalQueueShutdown(&invalidReferenceFrameTuples);
     LbqSignalQueueShutdown(&frameFecStatusQueue);
     LbqSignalQueueDrain(&asyncCallbackQueue);
+    LbqSignalQueueDrain(&presentationAckQueue);
     PltSetEvent(&idrFrameRequiredEvent);
 
     // This must be set to stop in a timely manner
@@ -1726,11 +1799,13 @@ int stopControlStream(void) {
     PltInterruptThread(&requestIdrFrameThread);
     PltInterruptThread(&controlReceiveThread);
     PltInterruptThread(&asyncCallbackThread);
+    PltInterruptThread(&presentationAckThread);
 
     PltJoinThread(&lossStatsThread);
     PltJoinThread(&requestIdrFrameThread);
     PltJoinThread(&controlReceiveThread);
     PltJoinThread(&asyncCallbackThread);
+    PltJoinThread(&presentationAckThread);
 
     // We will only have an RFI thread if RFI is enabled
     if (isReferenceFrameInvalidationEnabled()) {
@@ -2058,7 +2133,7 @@ int startControlStream(void) {
         return err;
     }
 
-    err = PltCreateThread("CtrlAsyncCb", asyncCallbackThreadFunc, NULL, &asyncCallbackThread);
+    err = PltCreateThread("PresentAck", presentationAckThreadFunc, NULL, &presentationAckThread);
     if (err != 0) {
         stopping = true;
         PltSetEvent(&idrFrameRequiredEvent);
@@ -2093,6 +2168,45 @@ int startControlStream(void) {
         return err;
     }
 
+    err = PltCreateThread("CtrlAsyncCb", asyncCallbackThreadFunc, NULL, &asyncCallbackThread);
+    if (err != 0) {
+        stopping = true;
+        PltSetEvent(&idrFrameRequiredEvent);
+        LbqSignalQueueShutdown(&presentationAckQueue);
+
+        if (ctlSock != INVALID_SOCKET) {
+            shutdownTcpSocket(ctlSock);
+        }
+        else {
+            ConnectionInterrupted = true;
+        }
+
+        PltInterruptThread(&lossStatsThread);
+        PltJoinThread(&lossStatsThread);
+
+        PltInterruptThread(&controlReceiveThread);
+        PltJoinThread(&controlReceiveThread);
+
+        PltInterruptThread(&requestIdrFrameThread);
+        PltJoinThread(&requestIdrFrameThread);
+
+        PltInterruptThread(&presentationAckThread);
+        PltJoinThread(&presentationAckThread);
+
+        if (ctlSock != INVALID_SOCKET) {
+            closeSocket(ctlSock);
+            ctlSock = INVALID_SOCKET;
+        }
+        else {
+            enet_peer_disconnect_now(peer, 0);
+            peer = NULL;
+            enet_host_destroy(client);
+            client = NULL;
+        }
+
+        return err;
+    }
+
     // Only create the reference frame invalidation thread if RFI is enabled
     if (isReferenceFrameInvalidationEnabled()) {
         err = PltCreateThread("InvRefFrames", invalidateRefFramesFunc, NULL, &invalidateRefFramesThread);
@@ -2100,6 +2214,7 @@ int startControlStream(void) {
             stopping = true;
             PltSetEvent(&idrFrameRequiredEvent);
             LbqSignalQueueShutdown(&asyncCallbackQueue);
+            LbqSignalQueueShutdown(&presentationAckQueue);
 
             if (ctlSock != INVALID_SOCKET) {
                 shutdownTcpSocket(ctlSock);
@@ -2119,6 +2234,9 @@ int startControlStream(void) {
 
             PltInterruptThread(&asyncCallbackThread);
             PltJoinThread(&asyncCallbackThread);
+
+            PltInterruptThread(&presentationAckThread);
+            PltJoinThread(&presentationAckThread);
 
             if (ctlSock != INVALID_SOCKET) {
                 closeSocket(ctlSock);
@@ -2151,26 +2269,6 @@ bool LiGetHdrMetadata(PSS_HDR_METADATA metadata) {
     return true;
 }
 
-// Ask the host (Apollo protocol extension) to switch host-side SBS 3D mode on the fly.
-// mode is one of SBS_MODE_* (see Limelight.h):
-//   SBS_MODE_OFF (0) - no host depth; host emits a plain W x H frame.
-//   SBS_MODE_AI  (1) - enable the host's startup-profile pipeline; host emits 2W x H.
-int LiSendSetSbsMode(uint8_t mode) {
-    uint8_t payload[4] = {mode, 0, 0, 0};
-    if (packetTypes[IDX_SET_SBS_MODE] == -1) {
-        // Host doesn't support the Apollo SBS extension (non-Gen7Enc control stream).
-        return -1;
-    }
-    return sendMessageAndForget(
-        packetTypes[IDX_SET_SBS_MODE],
-        sizeof(payload),
-        payload,
-        CTRL_CHANNEL_SERVERCTL,
-        ENET_PACKET_FLAG_RELIABLE,
-        false
-    );
-}
-
 // Ask the host (Apollo protocol extension) to dump one SBS debug frame (source/depth/SBS)
 // to the host's configured debug dir. No payload needed; a single reliable message.
 int LiSendSbsDebugDump(void) {
@@ -2189,33 +2287,26 @@ int LiSendSbsDebugDump(void) {
     );
 }
 
-// Ask the host (Apollo protocol extension) to change the live video mode without a reconnect.
-// The 12-byte little-endian payload is:
-//   u16 width, u16 height, u16 framerateX100, u16 requestId, u32 bitrateKbps
-// framerateX100 is hundredths of a Hz so fractional rates (2997 = 29.97) survive the wire.
-// bitrateKbps is the same total wire budget the client advertises in RTSP ANNOUNCE
-// maximumBitrateKbps; the host applies its own clamp and FEC/audio deduction.
-// requestId is an opaque client correlation token echoed verbatim in the 0x3008 ack; the host
-// never interprets it. The host may legitimately apply something different from the request
-// (for example clamping an oversized width to the codec ceiling), so the ack reports what was
-// ACTUALLY applied and correlation is by requestId rather than by the echoed values.
-// Returns positive on successful enqueue, zero on send failure, or -1 if unsupported.
-int LiSendSetVideoMode(uint16_t width, uint16_t height, uint16_t framerateX100,
-                       uint16_t requestId, uint32_t bitrateKbps) {
+int LiSendSetVideoModeV2(uint8_t desiredMode, uint32_t requestId,
+                         uint16_t sourceWidth, uint16_t sourceHeight,
+                         uint32_t framerateX100, uint32_t totalWireBitrateKbps) {
     BYTE_BUFFER bb;
-    uint8_t payload[12];
+    uint8_t payload[20];
 
-    if (packetTypes[IDX_SET_VIDEO_MODE] == -1) {
-        // Host doesn't support the Apollo video mode extension (non-Gen7Enc control stream).
+    if (!(SunshineFeatureFlags & LI_FF_ATOMIC_PRESENTATION_MODE_V2) ||
+            packetTypes[IDX_SET_VIDEO_MODE] == -1) {
         return -1;
     }
 
     BbInitializeWrappedBuffer(&bb, (char*)payload, 0, sizeof(payload), BYTE_ORDER_LITTLE);
-    BbPut16(&bb, width);
-    BbPut16(&bb, height);
-    BbPut16(&bb, framerateX100);
-    BbPut16(&bb, requestId);
-    BbPut32(&bb, bitrateKbps);
+    BbPut8(&bb, PRESENTATION_MODE_ACK_V2_VERSION);
+    BbPut8(&bb, desiredMode);
+    BbPut16(&bb, 0); // flags/reserved; must be zero in v2
+    BbPut32(&bb, requestId);
+    BbPut16(&bb, sourceWidth);
+    BbPut16(&bb, sourceHeight);
+    BbPut32(&bb, framerateX100);
+    BbPut32(&bb, totalWireBitrateKbps);
 
     return sendMessageAndForget(
         packetTypes[IDX_SET_VIDEO_MODE],

@@ -41,6 +41,12 @@ static void fakeClRumbleTriggers(uint16_t controllerNumber, uint16_t leftTrigger
 static void fakeClSetMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz) {}
 static void fakeClSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right) {};
 static void fakeClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b) {}
+static void fakeClVideoModeAckV2(uint8_t status, uint8_t appliedMode, uint8_t flags,
+                                 uint32_t requestId, uint32_t stateGeneration,
+                                 uint16_t appliedSourceWidth, uint16_t appliedSourceHeight,
+                                 uint16_t exactEncodedWidth, uint16_t exactEncodedHeight,
+                                 uint32_t appliedFramerateX100,
+                                 uint32_t effectiveEncoderBitrateKbps) {}
 
 static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .stageStarting = fakeClStageStarting,
@@ -56,6 +62,7 @@ static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .setMotionEventState = fakeClSetMotionEventState,
     .setControllerLED = fakeClSetControllerLED,
     .setAdaptiveTriggers = fakeClSetAdaptiveTriggers,
+    .videoModeAckV2 = fakeClVideoModeAckV2,
 };
 
 void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_RENDERER_CALLBACKS* arCallbacks,
@@ -145,6 +152,9 @@ void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_REND
         }
         if ((*clCallbacks)->setAdaptiveTriggers == NULL) {
             (*clCallbacks)->setAdaptiveTriggers = fakeClSetAdaptiveTriggers;
+        }
+        if ((*clCallbacks)->videoModeAckV2 == NULL) {
+            (*clCallbacks)->videoModeAckV2 = fakeClVideoModeAckV2;
         }
     }
 }
