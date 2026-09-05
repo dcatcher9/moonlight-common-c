@@ -290,8 +290,8 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
         goto Cleanup;
     }
 
-    // FEC only works in 16 byte chunks, so we must round down
-    // the given packet size to the nearest multiple of 16.
+    // Preserve the aligned network budget used with legacy hosts. Hosts advertising an
+    // explicit packet maximum can negotiate a smaller arbitrary byte length in ANNOUNCE.
     StreamConfig.packetSize -= StreamConfig.packetSize % 16;
 
     if (StreamConfig.packetSize == 0) {

@@ -115,7 +115,7 @@ void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_REND
     PCONNECTION_LISTENER_CALLBACKS* clCallbacks);
 void setRecorderCallbacks(PDECODER_RENDERER_CALLBACKS drCallbacks, PAUDIO_RENDERER_CALLBACKS arCallbacks);
 
-char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length);
+char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length, int videoPacketSizeMaximum);
 
 int initializeControlStream(void);
 int startControlStream(void);

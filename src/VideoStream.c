@@ -84,7 +84,7 @@ static void VideoPingThreadProc(void* context) {
 // Receive thread proc
 static void VideoReceiveThreadProc(void* context) {
     int err;
-    int bufferSize, receiveSize, decryptedSize, minSize;
+    int bufferSize, receiveSize, decryptedSize, queueEntryOffset, minSize;
     char* buffer;
     char* encryptedBuffer;
     int queueStatus;
@@ -96,7 +96,8 @@ static void VideoReceiveThreadProc(void* context) {
     decryptedSize = StreamConfig.packetSize + MAX_RTP_HEADER_SIZE;
     minSize = sizeof(RTP_PACKET) + ((EncryptionFeaturesEnabled & SS_ENC_VIDEO) ? sizeof(ENC_VIDEO_HEADER) : 0);
     receiveSize = decryptedSize + ((EncryptionFeaturesEnabled & SS_ENC_VIDEO) ? sizeof(ENC_VIDEO_HEADER) : 0);
-    bufferSize = decryptedSize + sizeof(RTPV_QUEUE_ENTRY);
+    queueEntryOffset = RtpvQueueEntryOffset(decryptedSize);
+    bufferSize = queueEntryOffset + sizeof(RTPV_QUEUE_ENTRY);
     buffer = NULL;
 
     if (setNonFatalRecvTimeoutMs(rtpSocket, UDP_RECV_POLL_TIMEOUT_MS) < 0) {
@@ -229,7 +230,7 @@ static void VideoReceiveThreadProc(void* context) {
         packet->timestamp = BE32(packet->timestamp);
         packet->ssrc = BE32(packet->ssrc);
 
-        queueStatus = RtpvAddPacket(&rtpQueue, packet, err, (PRTPV_QUEUE_ENTRY)&buffer[decryptedSize]);
+        queueStatus = RtpvAddPacket(&rtpQueue, packet, err, (PRTPV_QUEUE_ENTRY)&buffer[queueEntryOffset]);
 
         if (queueStatus == RTPF_RET_QUEUED) {
             // The queue owns the buffer

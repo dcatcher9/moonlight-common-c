@@ -277,7 +277,8 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
     memset(marks, 1, sizeof(char) * (totalPackets));
     
     int receiveSize = StreamConfig.packetSize + MAX_RTP_HEADER_SIZE;
-    int packetBufferSize = receiveSize + sizeof(RTPV_QUEUE_ENTRY);
+    int queueEntryOffset = RtpvQueueEntryOffset(receiveSize);
+    int packetBufferSize = queueEntryOffset + sizeof(RTPV_QUEUE_ENTRY);
 
 #ifdef FEC_VALIDATION_MODE
     // Choose a packet to drop
@@ -349,7 +350,7 @@ cleanup_packets:
         if (marks[i]) {
             // Only submit frame data, not FEC packets
             if (ret == 0 && i < queue->bufferDataPackets) {
-                PRTPV_QUEUE_ENTRY queueEntry = (PRTPV_QUEUE_ENTRY)&packets[i][receiveSize];
+                PRTPV_QUEUE_ENTRY queueEntry = (PRTPV_QUEUE_ENTRY)&packets[i][queueEntryOffset];
                 PRTP_PACKET rtpPacket = (PRTP_PACKET) packets[i];
                 rtpPacket->sequenceNumber = U16(i + queue->bufferLowestSequenceNumber);
                 rtpPacket->header = queue->pendingFecBlockList.head->packet->header;

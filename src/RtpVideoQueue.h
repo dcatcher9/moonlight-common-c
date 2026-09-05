@@ -12,6 +12,19 @@ typedef struct _RTPV_QUEUE_ENTRY {
     bool isParity;
 } RTPV_QUEUE_ENTRY, *PRTPV_QUEUE_ENTRY;
 
+// Packet payload sizes need not be aligned (for example a host maximum of 1346 bytes).
+// Keep the queue metadata aligned without adding padding to the authenticated/FEC payload.
+static inline int RtpvQueueEntryOffset(int packetSize) {
+#ifdef __cplusplus
+    const int alignment = alignof(RTPV_QUEUE_ENTRY);
+#elif defined(_MSC_VER)
+    const int alignment = __alignof(RTPV_QUEUE_ENTRY);
+#else
+    const int alignment = _Alignof(RTPV_QUEUE_ENTRY);
+#endif
+    return (packetSize + alignment - 1) / alignment * alignment;
+}
+
 typedef struct _RTPV_QUEUE_LIST {
     PRTPV_QUEUE_ENTRY head;
     PRTPV_QUEUE_ENTRY tail;

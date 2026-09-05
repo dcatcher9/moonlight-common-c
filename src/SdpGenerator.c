@@ -252,7 +252,7 @@ static int addGen5Options(PSDP_OPTION* head) {
     return err;
 }
 
-static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+static PSDP_OPTION getAttributesList(char*urlSafeAddr, int videoPacketSizeMaximum) {
     PSDP_OPTION optionHead;
     char payloadStr[92];
     int audioChannelCount;
@@ -326,6 +326,13 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         LC_ASSERT(StreamConfig.packetSize % 16 == 0);
         StreamConfig.packetSize -= sizeof(ENC_VIDEO_HEADER);
         LC_ASSERT(StreamConfig.packetSize % 16 == 0);
+    }
+    // The host maximum excludes the encryption prefix, so apply it only after reserving
+    // that prefix within the client's network budget. Scalar FEC accepts arbitrary byte
+    // lengths; keep exact advertised limits such as 1346 and the 200-byte minimum.
+    if (videoPacketSizeMaximum > 0 && StreamConfig.packetSize > videoPacketSizeMaximum) {
+        Limelog("Negotiated video packet size: %d -> %d bytes\n", StreamConfig.packetSize, videoPacketSizeMaximum);
+        StreamConfig.packetSize = videoPacketSizeMaximum;
     }
     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.packetSize);
     err |= addAttributeString(&optionHead, "x-nv-video[0].packetSize", payloadStr);
@@ -565,7 +572,7 @@ static int fillSdpTail(char* buffer, size_t length) {
 }
 
 // Get the SDP attributes for the stream config
-char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
+char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length, int videoPacketSizeMaximum) {
     PSDP_OPTION attributeList;
     int attributeListSize;
     int offset, written;
@@ -574,7 +581,7 @@ char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
 
     addrToUrlSafeString(&RemoteAddr, urlSafeAddr, sizeof(urlSafeAddr));
 
-    attributeList = getAttributesList(urlSafeAddr);
+    attributeList = getAttributesList(urlSafeAddr, videoPacketSizeMaximum);
     if (attributeList == NULL) {
         return NULL;
     }

@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "SdpPacketSize.h"
 #include "Rtsp.h"
 
 #define RTSP_CONNECT_TIMEOUT_SEC 10
@@ -10,6 +11,7 @@ static char rtspTargetUrl[256];
 static char* sessionIdString;
 static bool hasSessionId;
 static int rtspClientVersion;
+static int videoPacketSizeMaximum;
 static char urlAddr[URLSAFESTRING_LEN];
 static bool useEnet;
 static char* controlStreamId;
@@ -640,7 +642,7 @@ static bool sendVideoAnnounce(PRTSP_MESSAGE response, int* error) {
             goto FreeMessage;
         }
 
-        request.payload = getSdpPayloadForStreamConfig(rtspClientVersion, &payloadLength);
+        request.payload = getSdpPayloadForStreamConfig(rtspClientVersion, &payloadLength, videoPacketSizeMaximum);
         if (request.payload == NULL) {
             goto FreeMessage;
         }
@@ -1069,6 +1071,13 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
 
         if (!response.payload) {
             Limelog("RTSP DESCRIBE no content in response\n");
+            ret = -1;
+            goto Exit;
+        }
+
+        if (!parseVideoPacketSizeMaximum(response.payload, &videoPacketSizeMaximum)) {
+            Limelog("RTSP DESCRIBE contains an invalid video packet-size maximum\n");
+            freeMessage(&response);
             ret = -1;
             goto Exit;
         }
