@@ -187,7 +187,10 @@ static void decodeInputData(PQUEUED_AUDIO_PACKET packet) {
 
     PRTP_PACKET rtp = (PRTP_PACKET)&packet->data[0];
     if (lastSeq != 0 && (unsigned short)(lastSeq + 1) != rtp->sequenceNumber) {
-        Limelog("Network dropped audio data (expected %d, but received %d)\n", lastSeq + 1, rtp->sequenceNumber);
+        // This check runs after the bounded decoder queue, which can also evict stale packets.
+        // A sequence gap here alone cannot distinguish network loss from local backlog recovery.
+        Limelog("Audio decoder sequence gap (expected %d, but received %d; network loss or local backlog eviction)\n",
+                (unsigned short)(lastSeq + 1), rtp->sequenceNumber);
     }
 
     lastSeq = rtp->sequenceNumber;
