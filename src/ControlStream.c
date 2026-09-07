@@ -889,6 +889,12 @@ static bool sendMessageTcp(short ptype, short paylen, const void* payload) {
     return true;
 }
 
+#ifdef LC_CONTROL_TELEMETRY_TEST
+// Keep the production subscription writer and callback queue under test without sockets.
+extern bool LiTestControlSend(short ptype, short paylen, const void* payload,
+                              uint8_t channelId, uint32_t flags, bool moreData);
+#define sendMessageAndForget LiTestControlSend
+#else
 static bool sendMessageAndForget(short ptype, short paylen, const void* payload, uint8_t channelId, uint32_t flags, bool moreData) {
     bool ret;
 
@@ -903,6 +909,8 @@ static bool sendMessageAndForget(short ptype, short paylen, const void* payload,
 
     return ret;
 }
+
+#endif
 
 static bool sendMessageAndDiscardReply(short ptype, short paylen, const void* payload, uint8_t channelId, uint32_t flags, bool moreData) {
     if (AppVersionQuad[0] >= 5) {
@@ -1182,10 +1190,13 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
 
     LC_ASSERT(needsAsyncCallback(ctlHdr->type));
 
-    if (ctlHdr->type == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE] &&
-            packetLength != (int)(sizeof(*ctlHdr) + HOST_SBS_TELEMETRY_STATE_SIZE)) {
-        Limelog("Dropping malformed host SBS telemetry state: %d-byte packet\n", packetLength);
-        return;
+    if (ctlHdr->type == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE]) {
+        if (!(SunshineFeatureFlags & LI_FF_HOST_SBS_TELEMETRY_V2) ||
+                packetLength != (int)(sizeof(*ctlHdr) + HOST_SBS_TELEMETRY_STATE_SIZE) ||
+                ((const uint8_t*)(ctlHdr + 1))[0] != HOST_SBS_TELEMETRY_VERSION) {
+            Limelog("Dropping unsupported or malformed host SBS telemetry state: %d-byte packet\n", packetLength);
+            return;
+        }
     }
 
     queuedCb = malloc(sizeof(*queuedCb));
@@ -2324,13 +2335,13 @@ int LiSendHostSbsTelemetrySubscription(bool enabled, bool focused,
     uint8_t payload[8];
     uint8_t flags = (enabled ? 0x01 : 0x00) | (focused ? 0x02 : 0x00);
 
-    if (!(SunshineFeatureFlags & LI_FF_HOST_SBS_TELEMETRY_V1) ||
+    if (!(SunshineFeatureFlags & LI_FF_HOST_SBS_TELEMETRY_V2) ||
             packetTypes[IDX_HOST_SBS_TELEMETRY_SUBSCRIBE] == -1) {
         return -1;
     }
 
     BbInitializeWrappedBuffer(&bb, (char*)payload, 0, sizeof(payload), BYTE_ORDER_LITTLE);
-    BbPut8(&bb, 1); // protocol version
+    BbPut8(&bb, HOST_SBS_TELEMETRY_VERSION); // protocol version
     BbPut8(&bb, flags);
     BbPut16(&bb, requestId);
     BbPut16(&bb, intervalMs);

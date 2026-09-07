@@ -19,6 +19,7 @@ static uint16_t lastPacketPayloadLength;
 static bool strictIdrFrameWait;
 static uint64_t syntheticPtsBase;
 static uint16_t frameHostProcessingLatency;
+static uint16_t frameSourceId;
 static uint64_t firstPacketReceiveTime;
 static unsigned int firstPacketPresentationTime;
 static bool dropStatePending;
@@ -84,6 +85,7 @@ void initializeVideoDepacketizer(int pktSize) {
     decodingFrame = false;
     syntheticPtsBase = 0;
     frameHostProcessingLatency = 0;
+    frameSourceId = 0;
     firstPacketReceiveTime = 0;
     firstPacketPresentationTime = 0;
     lastPacketPayloadLength = 0;
@@ -114,6 +116,7 @@ static void dropFrameState(void) {
 
     // We're dropping frame state now
     dropStatePending = false;
+    frameSourceId = 0;
 
     if (strictIdrFrameWait || !idrFrameProcessed || waitingForIdrFrame) {
         // We'll need an IDR frame now if we're in non-RFI mode, if we've never
@@ -497,6 +500,7 @@ static void reassembleFrame(int frameNumber) {
             qdu->decodeUnit.frameType = frameType;
             qdu->decodeUnit.frameNumber = frameNumber;
             qdu->decodeUnit.frameHostProcessingLatency = frameHostProcessingLatency;
+            qdu->decodeUnit.frameSourceId = frameSourceId;
             qdu->decodeUnit.receiveTimeMs = firstPacketReceiveTime;
             qdu->decodeUnit.presentationTimeMs = firstPacketPresentationTime;
             qdu->decodeUnit.enqueueTimeMs = LiGetMillis();
@@ -751,6 +755,37 @@ static bool isFirstPacket(uint8_t flags, uint8_t fecBlockNumber) {
     return (flags == (FLAG_SOF | FLAG_EOF) || flags == FLAG_SOF) && fecBlockNumber == 0;
 }
 
+// Resolve and validate the header before reading per-frame metadata. Modern
+// headers use an explicit short/long marker; bytes 6..7 are source identity only
+// in the negotiated short variant.
+static uint32_t getFrameHeaderSize(const BUFFER_DESC* position) {
+    if (APP_VERSION_AT_LEAST(7, 1, 415)) {
+        if (position->length < 1) {
+            return UINT32_MAX;
+        }
+        if ((uint8_t)position->data[position->offset] == 0x01) {
+            return 8;
+        }
+        if ((uint8_t)position->data[position->offset] != 0x81) {
+            return UINT32_MAX;
+        }
+        if (APP_VERSION_AT_LEAST(7, 1, 450)) {
+            return 44;
+        }
+        if (APP_VERSION_AT_LEAST(7, 1, 446)) {
+            return 41;
+        }
+        return 24;
+    }
+    if (APP_VERSION_AT_LEAST(7, 1, 350)) {
+        return 8;
+    }
+    if (APP_VERSION_AT_LEAST(7, 1, 320)) {
+        return 12;
+    }
+    return APP_VERSION_AT_LEAST(5, 0, 0) ? 8 : 0;
+}
+
 // Process an RTP Payload
 // The caller will free *existingEntry unless we NULL it
 static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
@@ -837,6 +872,9 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
         // We're now decoding a frame
         decodingFrame = true;
         frameType = FRAME_TYPE_PFRAME;
+        frameHostProcessingLatency = 0;
+        frameSourceId = 0;
+        lastPacketPayloadLength = 0;
         firstPacketReceiveTime = receiveTimeMs;
         
         // Some versions of Sunshine don't send a valid PTS, so we will
@@ -856,7 +894,20 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
     lastPacketInStream = streamPacketIndex;
 
     // If this is the first packet, skip the frame header (if one exists)
-    uint32_t frameHeaderSize;
+    uint32_t frameHeaderSize = firstPacket ? getFrameHeaderSize(&currentPos) : 0;
+    if (firstPacket && (currentPos.length == 0 || currentPos.length < frameHeaderSize)) {
+        Limelog("Invalid or truncated frame header on frame %u: %u bytes\n", frameIndex, currentPos.length);
+        decodingFrame = false;
+        nextFrameNumber = frameIndex + 1;
+        dropFrameState();
+        if (waitingForIdrFrame) {
+            LiRequestIdrFrame();
+        }
+        else {
+            connectionDetectedFrameLoss(startFrameNumber, frameIndex);
+        }
+        return;
+    }
     LC_ASSERT_VT(currentPos.length > 0);
     if (firstPacket && currentPos.length > 0) {
         // Parse the frame type from the header
@@ -918,65 +969,16 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
             BbGet16(&bb, &lastPacketPayloadLength);
         }
 
-        if (APP_VERSION_AT_LEAST(7, 1, 450)) {
-            // >= 7.1.450 uses 2 different header lengths based on the first byte:
-            // 0x01 indicates an 8 byte header
-            // 0x81 indicates a 44 byte header
-            if (currentPos.data[0] == 0x01) {
-                frameHeaderSize = 8;
-            }
-            else {
-                LC_ASSERT_VT(currentPos.data[0] == (char)0x81);
-                frameHeaderSize = 44;
-            }
-        }
-        else if (APP_VERSION_AT_LEAST(7, 1, 446)) {
-            // [7.1.446, 7.1.450) uses 2 different header lengths based on the first byte:
-            // 0x01 indicates an 8 byte header
-            // 0x81 indicates a 41 byte header
-            if (currentPos.data[0] == 0x01) {
-                frameHeaderSize = 8;
-            }
-            else {
-                LC_ASSERT_VT(currentPos.data[0] == (char)0x81);
-                frameHeaderSize = 41;
-            }
-        }
-        else if (APP_VERSION_AT_LEAST(7, 1, 415)) {
-            // [7.1.415, 7.1.446) uses 2 different header lengths based on the first byte:
-            // 0x01 indicates an 8 byte header
-            // 0x81 indicates a 24 byte header
-            if (currentPos.data[0] == 0x01) {
-                frameHeaderSize = 8;
-            }
-            else {
-                LC_ASSERT_VT(currentPos.data[0] == (char)0x81);
-                frameHeaderSize = 24;
-            }
-        }
-        else if (APP_VERSION_AT_LEAST(7, 1, 350)) {
-            // [7.1.350, 7.1.415) should use the 8 byte header again
-            frameHeaderSize = 8;
-        }
-        else if (APP_VERSION_AT_LEAST(7, 1, 320)) {
-            // [7.1.320, 7.1.350) should use the 12 byte frame header
-            frameHeaderSize = 12;
-        }
-        else if (APP_VERSION_AT_LEAST(5, 0, 0)) {
-            // [5.x, 7.1.320) should use the 8 byte header
-            frameHeaderSize = 8;
-        }
-        else {
-            // Other versions don't have a frame header at all
-            frameHeaderSize = 0;
+        if (IS_SUNSHINE() && (SunshineFeatureFlags & LI_FF_SOURCE_FRAME_ID_V1) &&
+                frameHeaderSize == 8 && (uint8_t)currentPos.data[currentPos.offset] == 0x01) {
+            BYTE_BUFFER bb;
+            BbInitializeWrappedBuffer(&bb, currentPos.data, currentPos.offset + 6, 2, BYTE_ORDER_LITTLE);
+            BbGet16(&bb, &frameSourceId);
         }
 
-        LC_ASSERT_VT(currentPos.length >= frameHeaderSize);
-        if (currentPos.length >= frameHeaderSize) {
-            // Skip past the frame header
-            currentPos.offset += frameHeaderSize;
-            currentPos.length -= frameHeaderSize;
-        }
+        // The complete header was validated before parsing any fields.
+        currentPos.offset += frameHeaderSize;
+        currentPos.length -= frameHeaderSize;
 
         // We only parse H.264 and HEVC at the NALU level
         if (NegotiatedVideoFormat & (VIDEO_FORMAT_MASK_H264 | VIDEO_FORMAT_MASK_H265)) {

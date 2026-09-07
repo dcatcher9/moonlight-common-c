@@ -154,6 +154,12 @@ typedef struct _DECODE_UNIT {
     // (happens when the frame is repeated).
     uint16_t frameHostProcessingLatency;
 
+    // Negotiated exact encoder-input identity. Zero means unknown. Equal nonzero
+    // IDs on consecutive delivered frames identify a retained encoder input,
+    // not necessarily byte-identical lossy decoder output. Reset any reuse proof
+    // across an ambiguous frame gap, IDR, decoder/surface changes, or an unknown ID.
+    uint16_t frameSourceId;
+
     // Receive time of first buffer. This value uses an implementation-defined epoch,
     // but the same epoch as enqueueTimeMs and LiGetMillis().
     uint64_t receiveTimeMs;
@@ -502,9 +508,11 @@ typedef void(*ConnListenerVideoModeAckV2)(uint8_t status, uint8_t appliedMode, u
                                           uint32_t appliedFramerateX100,
                                           uint32_t effectiveEncoderBitrateKbps);
 
-// Apollo host-SBS telemetry v1 is delivered as an exact 88-byte little-endian body. The public
+// Apollo host-SBS telemetry v2 is delivered as an exact 240-byte little-endian body. The public
 // callback deliberately preserves the wire body so higher-level clients have one versioned parser.
-#define HOST_SBS_TELEMETRY_STATE_SIZE 88
+// Callers and the native core must be rebuilt together when this fixed body size changes.
+#define HOST_SBS_TELEMETRY_STATE_SIZE 240
+#define HOST_SBS_TELEMETRY_VERSION 2
 typedef void(*ConnListenerHostSbsTelemetryState)(
     const uint8_t payload[HOST_SBS_TELEMETRY_STATE_SIZE]);
 
@@ -615,10 +623,10 @@ int LiSendSetVideoModeV2(uint8_t desiredMode, uint32_t requestId,
                          uint16_t sourceWidth, uint16_t sourceHeight,
                          uint32_t framerateX100, uint32_t bitrateKbps);
 
-// Subscribe to Apollo host-SBS telemetry. version is fixed at 1. enabled requests periodic state;
+// Subscribe to Apollo host-SBS telemetry. version is fixed at 2. enabled requests periodic state;
 // focused selects the faster diagnostic cadence. intervalMs is the requested cadence and requestId
 // correlates the direct acknowledgement. Subsequent periodic state bodies use requestId zero.
-// Returns -1 when the host did not advertise LI_FF_HOST_SBS_TELEMETRY_V1.
+// Returns -1 when the host did not advertise LI_FF_HOST_SBS_TELEMETRY_V2.
 int LiSendHostSbsTelemetrySubscription(bool enabled, bool focused,
                                        uint16_t requestId, uint16_t intervalMs);
 
@@ -1024,8 +1032,9 @@ void LiRequestIdrFrame(void);
 // This function returns any extended feature flags supported by the host.
 #define LI_FF_PEN_TOUCH_EVENTS        0x01 // LiSendTouchEvent()/LiSendPenEvent() supported
 #define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported
+#define LI_FF_SOURCE_FRAME_ID_V1     0x10000000 // Exact encoder-input ID in short frame header
 #define LI_FF_ATOMIC_PRESENTATION_MODE_V2 0x20000000 // Atomic SBS mode + quality control v2
-#define LI_FF_HOST_SBS_TELEMETRY_V1   0x40000000 // Apollo host SBS telemetry v1
+#define LI_FF_HOST_SBS_TELEMETRY_V2   0x40000000 // Apollo host SBS telemetry v2
 uint32_t LiGetHostFeatureFlags(void);
 
 #ifdef __cplusplus

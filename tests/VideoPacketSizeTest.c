@@ -17,6 +17,7 @@ uint16_t VideoPortNumber = 47998;
 uint32_t EncryptionFeaturesSupported;
 uint32_t EncryptionFeaturesRequested;
 uint32_t EncryptionFeaturesEnabled;
+uint32_t SunshineFeatureFlags;
 bool AudioEncryptionEnabled;
 bool HighQualitySurroundSupported;
 bool HighQualitySurroundEnabled;
@@ -25,6 +26,10 @@ bool ReferenceFrameInvalidationSupported;
 int NegotiatedVideoFormat;
 volatile bool ConnectionInterrupted;
 static int delivered;
+static int expectedFrameNumber = 1;
+static uint16_t expectedHostProcessingLatency;
+static uint16_t expectedSourceId;
+static int idrRequests;
 static int expectedPayloadSize;
 static unsigned char* expectedFrame;
 static int expectedFrameSize;
@@ -42,9 +47,9 @@ uint64_t LiGetMillis(void) { return 100; }
 bool LiGetCurrentHostDisplayHdrMode(void) { return false; }
 bool isReferenceFrameInvalidationEnabled(void) { return false; }
 bool isReferenceFrameInvalidationSupportedByDecoder(void) { return false; }
-void LiRequestIdrFrame(void) {}
+void LiRequestIdrFrame(void) { ++idrRequests; }
 void notifyKeyFrameReceived(void) {}
-void connectionReceivedCompleteFrame(uint32_t frameIndex) { assert(frameIndex == 1); }
+void connectionReceivedCompleteFrame(uint32_t frameIndex) { assert(frameIndex == (uint32_t)expectedFrameNumber); }
 void connectionDetectedFrameLoss(uint32_t first, uint32_t last) { (void)first; (void)last; assert(false); }
 void connectionSawFrame(uint32_t frameIndex) { assert(frameIndex == 1); }
 void connectionSendFrameFecStatus(PSS_FRAME_FEC_STATUS status) { (void)status; }
@@ -81,11 +86,22 @@ static void announcePacketSize(const char* describe, int networkBudget, bool enc
     snprintf(attribute, sizeof(attribute), "a=x-nv-video[0].packetSize:%d \r\n", expected);
     assert(strstr(announce, attribute));
     assert(StreamConfig.packetSize == expected);
+    const char* featureFlags = strstr(announce, "a=x-ml-general.featureFlags:");
+    if (IS_SUNSHINE()) {
+        assert(featureFlags);
+        assert(strtoul(featureFlags + strlen("a=x-ml-general.featureFlags:"), NULL, 10) & ML_FF_SOURCE_FRAME_ID_V1);
+    }
+    else {
+        assert(!featureFlags);
+    }
     assert(((EncryptionFeaturesEnabled & SS_ENC_VIDEO) != 0) == encrypted);
     free(announce);
 }
 
 static int submitDecodeUnit(PDECODE_UNIT unit) {
+    assert(unit->frameNumber == expectedFrameNumber);
+    assert(unit->frameHostProcessingLatency == expectedHostProcessingLatency);
+    assert(unit->frameSourceId == expectedSourceId);
     assert(unit->fullLength == expectedFrameSize);
     int offset = 0;
     for (PLENTRY entry = unit->bufferList; entry; entry = entry->next) {
@@ -98,13 +114,17 @@ static int submitDecodeUnit(PDECODE_UNIT unit) {
     return DR_OK;
 }
 
-static void recoverPacket(int maximum, int lostIndex, int codec) {
+static void recoverPacket(int maximum, int lostIndex, int codec, bool sourceIdSupported) {
     char sdp[100];
     snprintf(sdp, sizeof(sdp), "a=x-ss-video[0].maxPacketSize:%d\r\n", maximum);
     announcePacketSize(sdp, 1424, true, false, maximum);
     const int shardSize = StreamConfig.packetSize + MAX_RTP_HEADER_SIZE;
     expectedPayloadSize = StreamConfig.packetSize - sizeof(NV_VIDEO_PACKET);
     delivered = 0;
+    expectedFrameNumber = 1;
+    expectedHostProcessingLatency = 0xaa55;
+    expectedSourceId = sourceIdSupported ? 0xc37a : 0;
+    SunshineFeatureFlags = sourceIdSupported ? LI_FF_SOURCE_FRAME_ID_V1 : 0;
     NegotiatedVideoFormat = codec;
     StreamConfig.fps = 60;
     VideoCallbacks.capabilities = CAPABILITY_DIRECT_SUBMIT;
@@ -114,6 +134,10 @@ static void recoverPacket(int maximum, int lostIndex, int codec) {
     const int frameBytes = expectedPayloadSize * 4 - padding;
     unsigned char* framed = calloc(1, expectedPayloadSize * 4);
     framed[0] = 1;
+    framed[1] = 0x55;
+    framed[2] = 0xaa;
+    framed[6] = 0x7a;
+    framed[7] = 0xc3;
     framed[3] = 2; // IDR
     framed[4] = (unsigned char)((expectedPayloadSize - padding) & 0xff);
     framed[5] = (unsigned char)((expectedPayloadSize - padding) >> 8);
@@ -200,7 +224,96 @@ static void recoverPacket(int maximum, int lostIndex, int codec) {
     free(framed);
 }
 
+// Exercise the real depacketizer independently of FEC padding, which would mask
+// truncated headers. Every call owns one complete packet and drains it synchronously.
+static void deliverHeaderFrame(int frameNumber, uint8_t marker, int headerLength,
+                               uint16_t sourceId, uint16_t latency, bool valid,
+                               uint16_t expectedId) {
+    static unsigned char payload[] = {0x12, 0x34, 0x56};
+    const int payloadLength = valid ? (int)sizeof(payload) : 0;
+    const int packetLength = MAX_RTP_HEADER_SIZE + sizeof(NV_VIDEO_PACKET) + headerLength + payloadLength;
+    unsigned char* packet = calloc(1, RtpvQueueEntryOffset(packetLength) + sizeof(RTPV_QUEUE_ENTRY));
+    assert(packet);
+    PRTP_PACKET rtp = (PRTP_PACKET)packet;
+    rtp->header = 0x80 | FLAG_EXTENSION;
+    PNV_VIDEO_PACKET video = (PNV_VIDEO_PACKET)(packet + MAX_RTP_HEADER_SIZE);
+    video->streamPacketIndex = (uint32_t)(frameNumber - 1) << 8;
+    video->frameIndex = frameNumber;
+    video->flags = FLAG_CONTAINS_PIC_DATA | FLAG_SOF | FLAG_EOF;
+    unsigned char* header = (unsigned char*)(video + 1);
+    if (headerLength >= 1) header[0] = marker;
+    if (headerLength >= 3) {
+        header[1] = latency & 0xff;
+        header[2] = latency >> 8;
+    }
+    if (headerLength >= 4) header[3] = 2; // IDR lets each recovery stand alone.
+    if (headerLength >= 6) {
+        header[4] = (headerLength + payloadLength) & 0xff;
+        header[5] = (headerLength + payloadLength) >> 8;
+    }
+    if (headerLength >= 8) {
+        header[6] = sourceId & 0xff;
+        header[7] = sourceId >> 8;
+    }
+    if (payloadLength) memcpy(header + headerLength, payload, payloadLength);
+    PRTPV_QUEUE_ENTRY entry = (PRTPV_QUEUE_ENTRY)(packet + RtpvQueueEntryOffset(packetLength));
+    entry->packet = rtp;
+    entry->length = packetLength;
+    entry->receiveTimeMs = 100 + frameNumber;
+    entry->presentationTimeMs = frameNumber;
+    expectedFrame = payload;
+    expectedFrameSize = sizeof(payload);
+    expectedFrameNumber = frameNumber;
+    expectedHostProcessingLatency = IS_SUNSHINE() ? latency : 0;
+    expectedSourceId = expectedId;
+    int previousDelivered = delivered;
+    int previousIdrRequests = idrRequests;
+    queueRtpPacket(entry);
+    assert(delivered == previousDelivered + (valid ? 1 : 0));
+    if (!valid) assert(idrRequests > previousIdrRequests);
+}
+
+static void sourceIdentityHeaders(void) {
+    NegotiatedVideoFormat = VIDEO_FORMAT_AV1_MAIN8;
+    StreamConfig.fps = 60;
+    VideoCallbacks.capabilities = CAPABILITY_DIRECT_SUBMIT;
+    VideoCallbacks.submitDecodeUnit = submitDecodeUnit;
+    SunshineFeatureFlags = LI_FF_SOURCE_FRAME_ID_V1;
+    initializeVideoDepacketizer(1392);
+    int frameNumber = 1;
+    deliverHeaderFrame(frameNumber++, 0x01, 8, 0x1234, 91, true, 0x1234);
+    deliverHeaderFrame(frameNumber++, 0x01, 8, 0x1234, 92, true, 0x1234);
+    // Unknown identity and omitted latency must not inherit the preceding frame.
+    deliverHeaderFrame(frameNumber++, 0x01, 8, 0, 0, true, 0);
+    SunshineFeatureFlags = 0;
+    deliverHeaderFrame(frameNumber++, 0x01, 8, 0x5678, 93, true, 0);
+    SunshineFeatureFlags = LI_FF_SOURCE_FRAME_ID_V1;
+    deliverHeaderFrame(frameNumber++, 0x81, 44, 0x5678, 94, true, 0);
+    AppVersionQuad[3] = 0; // GFE reserved bytes never gain Sunshine semantics.
+    deliverHeaderFrame(frameNumber++, 0x01, 8, 0x5678, 95, true, 0);
+    AppVersionQuad[3] = -1;
+    deliverHeaderFrame(frameNumber++, 0x01, 8, UINT16_MAX, 96, true, UINT16_MAX);
+
+    for (int length = 0; length < 8; ++length) {
+        deliverHeaderFrame(frameNumber++, 0x01, length, 0x9999, 97, false, 0);
+        deliverHeaderFrame(frameNumber++, 0x01, 8, 0, 0, true, 0);
+    }
+    deliverHeaderFrame(frameNumber++, 0x81, 8, 0x9999, 97, false, 0);
+    deliverHeaderFrame(frameNumber++, 0x01, 8, 0x4321, 98, true, 0x4321);
+    deliverHeaderFrame(frameNumber++, 0x21, 44, 0x9999, 97, false, 0);
+    deliverHeaderFrame(frameNumber++, 0x01, 8, 0xabcd, 99, true, 0xabcd);
+    destroyVideoDepacketizer();
+
+    // A fresh legacy-host session must not retain a previous session's identity.
+    SunshineFeatureFlags = 0;
+    initializeVideoDepacketizer(1392);
+    deliverHeaderFrame(1, 0x01, 8, 0xabcd, 0, true, 0);
+    destroyVideoDepacketizer();
+}
+
 int main(void) {
+    assert(LI_FF_SOURCE_FRAME_ID_V1 == 0x10000000);
+    assert(ML_FF_SOURCE_FRAME_ID_V1 == 0x10);
     int selected = 1392;
     assert(parseVideoPacketSizeMaximum("a=x-ss-general.featureFlags:0\r\n", &selected) && selected == 0);
     assert(parseVideoPacketSizeMaximum("a=x-ss-video[0].maxPacketSize:2000\n", &selected) && selected == 2000);
@@ -233,6 +346,8 @@ int main(void) {
     for (unsigned int c = 0; c < sizeof(caps) / sizeof(caps[0]); ++c)
         for (unsigned int l = 0; l < sizeof(losses) / sizeof(losses[0]); ++l)
             for (unsigned int v = 0; v < sizeof(codecs) / sizeof(codecs[0]); ++v)
-                recoverPacket(caps[c], losses[l], codecs[v]);
+                for (int supported = 0; supported < 2; ++supported)
+                    recoverPacket(caps[c], losses[l], codecs[v], supported != 0);
+    sourceIdentityHeaders();
     return 0;
 }
