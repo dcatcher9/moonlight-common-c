@@ -95,6 +95,17 @@ if(LC_BUILD_INPUT_STREAM_TESTS)
   add_test(NAME input-stream-order-test COMMAND input-stream-order-test)
 endif()
 
+option(LC_BUILD_CONNECTION_TERMINATION_TESTS "Build connection termination lifecycle tests" OFF)
+if(LC_BUILD_CONNECTION_TERMINATION_TESTS)
+  enable_testing()
+  # The fixture includes production Connection.c with a controlled allocator and
+  # supplies deterministic platform/transport stubs. No real connection is made.
+  add_executable(connection-termination-test tests/ConnectionTerminationTest.c src/FakeCallbacks.c)
+  target_include_directories(connection-termination-test PRIVATE src reedsolomon enet/include)
+  target_compile_definitions(connection-termination-test PRIVATE HAS_SOCKLEN_T NDEBUG)
+  add_test(NAME connection-termination-test COMMAND connection-termination-test)
+endif()
+
 option(LC_BUILD_AUDIO_QUEUE_TESTS "Build audio queue overflow tests" OFF)
 if(LC_BUILD_AUDIO_QUEUE_TESTS)
   enable_testing()

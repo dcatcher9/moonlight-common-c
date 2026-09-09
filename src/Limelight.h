@@ -407,7 +407,20 @@ typedef void(*ConnListenerConnectionStarted)(void);
 // non-zero, it means the termination was probably unexpected (loss of network,
 // crash, or similar conditions). This will not be invoked as a result of a call
 // to LiStopConnection() or LiInterruptConnection().
+// Delivery is asynchronous and may occur after LiStopConnection() returns, even
+// after another connection has started. This legacy callback carries no session
+// identity; clients that reconnect should use the session-aware callback below.
+// Calling LiStopConnection() from a termination callback is supported, subject
+// to the normal requirement to serialize connection start/stop operations.
 typedef void(*ConnListenerConnectionTerminated)(int errorCode);
+
+// Same termination notification, with the opaque connectionSessionId supplied
+// by the client at LiStartConnection(). The callback, error, and ID are captured
+// when termination is scheduled. IDs are client-local and never sent to the host.
+// Use a distinct ID for each connection and reject stale IDs before changing
+// current-session state, including calling LiStopConnection(). Synchronize that
+// check and any resulting stop with session replacement to avoid a check/stop race.
+typedef void(*ConnListenerConnectionTerminatedWithSession)(int errorCode, uint64_t sessionId);
 
 // This error code is passed to ConnListenerConnectionTerminated() when the stream
 // is being gracefully terminated by the host. It usually means the app on the host
@@ -532,9 +545,13 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
     ConnListenerDepthStatus depthStatus;
     ConnListenerHostSbsTelemetryState hostSbsTelemetryState;
-    // Presentation extensions change this structure's layout. Callers and moonlight-common-c
+    // Extensions change this structure's layout. Callers and moonlight-common-c
     // must be rebuilt together; no cross-version binary ABI is promised.
     ConnListenerVideoModeAckV2 videoModeAckV2;
+    // Optional. When non-NULL, this is invoked instead of connectionTerminated.
+    ConnListenerConnectionTerminatedWithSession connectionTerminatedWithSession;
+    // Copied at LiStartConnection(); only interpreted by the client callback.
+    uint64_t connectionSessionId;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -591,6 +608,8 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     void* audioContext, int arFlags);
 
 // This function stops streaming. This function is not thread-safe.
+// It does not wait for already scheduled termination callbacks. Session-aware
+// callbacks must reject stale IDs before stopping a newly started connection.
 void LiStopConnection(void);
 
 // This function interrupts a pending LiStartConnection() call. This interruption happens asynchronously

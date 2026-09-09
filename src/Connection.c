@@ -2,9 +2,16 @@
 
 static int stage = STAGE_NONE;
 static ConnListenerConnectionTerminated originalTerminationCallback;
+static ConnListenerConnectionTerminatedWithSession originalTerminationCallbackWithSession;
+static uint64_t originalTerminationSessionId;
 static bool alreadyTerminated;
-static PLT_THREAD terminationCallbackThread;
-static int terminationCallbackErrorCode;
+
+typedef struct _TERMINATION_CALLBACK_CONTEXT {
+    ConnListenerConnectionTerminated callback;
+    ConnListenerConnectionTerminatedWithSession callbackWithSession;
+    uint64_t sessionId;
+    int errorCode;
+} TERMINATION_CALLBACK_CONTEXT;
 
 // Common globals
 char* RemoteAddrString;
@@ -145,8 +152,19 @@ void LiStopConnection(void) {
 
 static void terminationCallbackThreadFunc(void* context)
 {
-    // Invoke the client's termination callback
-    originalTerminationCallback(terminationCallbackErrorCode);
+    // Release the allocation before invoking client code, which may stop this
+    // connection and start another one before returning.
+    const TERMINATION_CALLBACK_CONTEXT callback = *(TERMINATION_CALLBACK_CONTEXT*)context;
+    free(context);
+
+    // Never read session globals here: this detached callback can run after a
+    // subsequent LiStartConnection() has replaced them.
+    if (callback.callbackWithSession != NULL) {
+        callback.callbackWithSession(callback.errorCode, callback.sessionId);
+    }
+    else {
+        callback.callback(callback.errorCode);
+    }
 }
 
 // This shim callback runs the client's connectionTerminated() callback on a
@@ -158,25 +176,35 @@ static void terminationCallbackThreadFunc(void* context)
 static void ClInternalConnectionTerminated(int errorCode)
 {
     int err;
+    TERMINATION_CALLBACK_CONTEXT* context;
 
     // Avoid recursion and issuing multiple callbacks
     if (alreadyTerminated || ConnectionInterrupted) {
         return;
     }
 
-    terminationCallbackErrorCode = errorCode;
     alreadyTerminated = true;
 
+    context = malloc(sizeof(*context));
+    if (context == NULL) {
+        Limelog("Failed to allocate termination callback context\n");
+        LC_ASSERT(context != NULL);
+        return;
+    }
+    context->callback = originalTerminationCallback;
+    context->callbackWithSession = originalTerminationCallbackWithSession;
+    context->sessionId = originalTerminationSessionId;
+    context->errorCode = errorCode;
+
     // Invoke the termination callback on a separate thread
-    err = PltCreateThread("AsyncTerm", terminationCallbackThreadFunc, NULL, &terminationCallbackThread);
+    err = PltCreateThreadDetached("AsyncTerm", terminationCallbackThreadFunc, context);
     if (err != 0) {
+        free(context);
         // Nothing we can safely do here, so we'll just assert on debug builds
         Limelog("Failed to create termination thread: %d\n", err);
         LC_ASSERT(err == 0);
+        return;
     }
-
-    // Detach the thread since we never wait on it
-    PltDetachThread(&terminationCallbackThread);
 }
 
 static bool parseRtspPortNumberFromUrl(const char* rtspSessionUrl, uint16_t* port)
@@ -250,11 +278,14 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     setRecorderCallbacks(&VideoCallbacks, &AudioCallbacks);
 #endif
 
-    // Hook the termination callback so we can avoid issuing a termination callback
-    // after LiStopConnection() is called.
+    // Hook the termination callback so we can avoid scheduling new termination
+    // callbacks after LiStopConnection() is called. Already scheduled callbacks
+    // retain this session's callback and identifier independently.
     //
     // Initialize ListenerCallbacks before anything that could call Limelog().
     originalTerminationCallback = clCallbacks->connectionTerminated;
+    originalTerminationCallbackWithSession = clCallbacks->connectionTerminatedWithSession;
+    originalTerminationSessionId = clCallbacks->connectionSessionId;
     memcpy(&ListenerCallbacks, clCallbacks, sizeof(ListenerCallbacks));
     ListenerCallbacks.connectionTerminated = ClInternalConnectionTerminated;
 

@@ -215,10 +215,21 @@ void PltInterruptThread(PLT_THREAD* thread) {
 static void thread_deallocator(OSThread *thread, void *stack) {
     free(stack);
 }
+
+static void detached_thread_deallocator(OSThread *thread, void *stack) {
+    free(stack);
+    // OSThread is the first member of PLT_THREAD. Unlike an OS handle, its
+    // storage must survive until the OS has finished using the detached thread.
+    free(thread);
+}
 #endif
 
-int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THREAD* thread) {
+static int createThread(const char* name, ThreadEntry entry, void* context, PLT_THREAD* thread, bool detached) {
     struct thread_context* ctx;
+
+#ifndef __WIIU__
+    (void)detached;
+#endif
 
     ctx = (struct thread_context*)malloc(sizeof(*ctx));
     if (ctx == NULL) {
@@ -263,7 +274,7 @@ int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THRE
     }
 
     OSSetThreadName(&thread->thread, name);
-    OSSetThreadDeallocator(&thread->thread, thread_deallocator);
+    OSSetThreadDeallocator(&thread->thread, detached ? detached_thread_deallocator : thread_deallocator);
     OSResumeThread(&thread->thread);
 #elif defined(__3DS__)
     {
@@ -302,6 +313,36 @@ int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THRE
 
     activeThreads++;
 
+    return 0;
+}
+
+int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THREAD* thread) {
+    return createThread(name, entry, context, thread, false);
+}
+
+int PltCreateThreadDetached(const char* name, ThreadEntry entry, void* context) {
+    int err;
+#ifdef __WIIU__
+    PLT_THREAD* thread = malloc(sizeof(*thread));
+    if (thread == NULL) {
+        return -1;
+    }
+#else
+    PLT_THREAD localThread;
+    PLT_THREAD* thread = &localThread;
+#endif
+
+    err = createThread(name, entry, context, thread, true);
+    if (err != 0) {
+#ifdef __WIIU__
+        free(thread);
+#endif
+        return err;
+    }
+
+    // On Wii U, detaching allows the OS deallocator to release thread storage.
+    // Do not access it after this call, since entry may already have returned.
+    PltDetachThread(thread);
     return 0;
 }
 

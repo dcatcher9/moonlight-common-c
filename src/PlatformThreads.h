@@ -53,6 +53,9 @@ void PltLockMutex(PLT_MUTEX* mutex);
 void PltUnlockMutex(PLT_MUTEX* mutex);
 
 int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THREAD* thread);
+// No thread handle escapes. The caller retains context ownership on failure;
+// on success, entry owns context and may outlive the creating connection.
+int PltCreateThreadDetached(const char* name, ThreadEntry entry, void* context);
 void PltInterruptThread(PLT_THREAD* thread);
 bool PltIsThreadInterrupted(PLT_THREAD* thread);
 void PltJoinThread(PLT_THREAD* thread);
