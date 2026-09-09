@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "Ds5HapticsStream.h"
 
 #define MAX_OPTION_NAME_LEN 128
 
@@ -272,6 +273,13 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr, int videoPacketSizeMaximu
                                          ML_FF_HOST_SBS_TELEMETRY_V2 |
                                          ML_FF_ATOMIC_PRESENTATION_MODE_V2 |
                                          ML_FF_SOURCE_FRAME_ID_V1;
+        if (usesLegacyDs5HapticsCapabilities(SunshineFeatureFlags)) {
+            // Legacy authored-haptics hosts assign 0x04/0x08 to PCM/IR, so even
+            // Android with no authored callback must not announce those SBS bits.
+            moonlightFeatureFlags = ML_FF_FEC_STATUS | ML_FF_SESSION_ID_V1;
+        }
+        moonlightFeatureFlags |= getDs5HapticsClientFeatureFlags(SunshineFeatureFlags,
+            ListenerCallbacks.ds5HapticsPcm != NULL, ListenerCallbacks.ds5HapticsIrV2 != NULL);
         snprintf(payloadStr, sizeof(payloadStr), "%u", moonlightFeatureFlags);
         err |= addAttributeString(&optionHead, "x-ml-general.featureFlags", payloadStr);
 
@@ -300,6 +308,15 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr, int videoPacketSizeMaximu
             // we'll encrypt anyway (since we are capable of doing so) and print a warning.
             Limelog("Enabling audio encryption by host request despite client opt-out. Audio quality may suffer!");
             EncryptionFeaturesEnabled |= SS_ENC_AUDIO;
+        }
+
+        // Preserve the microphone extension's audio-encryption coupling, while
+        // also allowing the client to request microphone encryption explicitly.
+        if (StreamConfig.redirectMic && (EncryptionFeaturesSupported & SS_ENC_MICROPHONE) &&
+                ((EncryptionFeaturesEnabled & SS_ENC_AUDIO) ||
+                 (StreamConfig.encryptionFlags & ENCFLG_MICROPHONE) ||
+                 (EncryptionFeaturesRequested & SS_ENC_MICROPHONE))) {
+            EncryptionFeaturesEnabled |= SS_ENC_MICROPHONE;
         }
 
         snprintf(payloadStr, sizeof(payloadStr), "%u", EncryptionFeaturesEnabled);

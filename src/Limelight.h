@@ -33,6 +33,7 @@ extern "C" {
 #define ENCFLG_NONE  0x00000000
 #define ENCFLG_AUDIO 0x00000001
 #define ENCFLG_VIDEO 0x00000002
+#define ENCFLG_MICROPHONE 0x00000004
 #define ENCFLG_ALL   0xFFFFFFFF
 
 // This function returns a string that you SHOULD append to the /launch and /resume
@@ -100,10 +101,26 @@ typedef struct _STREAM_CONFIGURATION {
     // in /launch and /resume requests.
     char remoteInputAesKey[16];
     char remoteInputAesIv[16];
+
+    // Request optional client-to-host Opus microphone forwarding. Hosts that do
+    // not support the microphone extension continue streaming without it.
+    bool redirectMic;
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the stack or heap
 void LiInitializeStreamConfiguration(PSTREAM_CONFIGURATION streamConfig);
+
+// Submit one encoded Opus microphone packet after STAGE_MIC_STREAM_START has
+// completed. The data is borrowed only for this call. Returns the UDP packet
+// length on success or -1 if unavailable, invalid, or unable to send. Concurrent
+// capture and teardown are safe; stop old capture before starting a new session.
+// Maximum Opus payload: 1388 bytes unencrypted, 1360 bytes with legacy AES-CBC padding.
+int sendMicrophoneOpusData(const unsigned char* opusData, int opusLength);
+bool isMicrophoneEncryptionEnabled(void);
+
+// Stop microphone transport early if desired. Idempotent and also called by
+// LiStopConnection(); local microphone capture remains the client's responsibility.
+void destroyMicrophoneStream(void);
 
 // These identify codec configuration data in the buffer lists
 // of frames identified as IDR frames for H.264 and HEVC formats.
@@ -384,7 +401,9 @@ void LiInitializeAudioCallbacks(PAUDIO_RENDERER_CALLBACKS arCallbacks);
 #define STAGE_VIDEO_STREAM_START 9
 #define STAGE_AUDIO_STREAM_START 10
 #define STAGE_INPUT_STREAM_START 11
-#define STAGE_MAX 12
+#define STAGE_MIC_STREAM_START 12
+#define STAGE_MIC_STREAM_UNSUPPORTED_OR_UNINITIALIZED 13
+#define STAGE_MAX 14
 
 // This callback is invoked to indicate that a stage of initialization is about to begin
 typedef void(*ConnListenerStageStarting)(int stage);
@@ -529,6 +548,53 @@ typedef void(*ConnListenerVideoModeAckV2)(uint8_t status, uint8_t appliedMode, u
 typedef void(*ConnListenerHostSbsTelemetryState)(
     const uint8_t payload[HOST_SBS_TELEMETRY_STATE_SIZE]);
 
+// Authored DualSense haptics captured from the host's virtual USB audio
+// endpoint. PCM is signed 16-bit little-endian, interleaved haptic-left then
+// haptic-right. The buffer is valid only for the duration of the callback.
+// Packets are intentionally unreliable; use sequenceNumber and the
+// DISCONTINUITY flag to reset a client-side jitter buffer after loss.
+#define LI_DS5_HAPTICS_PCM_FLAG_STREAM_START  0x01
+#define LI_DS5_HAPTICS_PCM_FLAG_STREAM_END    0x02
+#define LI_DS5_HAPTICS_PCM_FLAG_DISCONTINUITY 0x04
+typedef struct _LI_DS5_HAPTICS_PCM_FRAME {
+    uint8_t flags;
+    uint16_t controllerNumber;
+    uint32_t sequenceNumber;
+    uint64_t presentationTimeUs;
+    uint32_t sampleRate;
+    uint16_t frameCount;
+    uint8_t channelCount;
+    uint8_t bitsPerSample;
+    const uint8_t* pcmData;
+    uint32_t pcmDataLength;
+} LI_DS5_HAPTICS_PCM_FRAME, *PLI_DS5_HAPTICS_PCM_FRAME;
+typedef void(*ConnListenerDs5HapticsPcm)(const LI_DS5_HAPTICS_PCM_FRAME* frame);
+
+// Device-independent authored haptics used when the client selected simulated
+// DualSense mode. Values are normalized analysis features, not actuator
+// commands. The client owns device calibration and final rendering.
+#define LI_DS5_HAPTICS_IR_FLAG_DISCONTINUITY 0x01
+#define LI_DS5_HAPTICS_IR_FLAG_PARTIAL       0x02
+#define LI_DS5_HAPTICS_IR_FLAG_STREAM_END    0x04
+#define LI_DS5_HAPTICS_IR_FLAG_SILENT        0x08
+typedef struct _LI_DS5_HAPTICS_IR_LANE_V2 {
+    float rmsAmplitude;
+    float peakAmplitude;
+    float transientStrength;
+    float lowBandRatio;
+    float zeroCrossingRateHz;
+} LI_DS5_HAPTICS_IR_LANE_V2, *PLI_DS5_HAPTICS_IR_LANE_V2;
+typedef struct _LI_DS5_HAPTICS_IR_FRAME_V2 {
+    uint8_t flags;
+    uint16_t controllerNumber;
+    uint32_t sourceSequenceNumber;
+    uint64_t timestampUs;
+    uint32_t sourceFrameCount;
+    LI_DS5_HAPTICS_IR_LANE_V2 lanes[2];
+    float laneCorrelation;
+} LI_DS5_HAPTICS_IR_FRAME_V2, *PLI_DS5_HAPTICS_IR_FRAME_V2;
+typedef void(*ConnListenerDs5HapticsIrV2)(const LI_DS5_HAPTICS_IR_FRAME_V2* frame);
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
     ConnListenerStageComplete stageComplete;
@@ -552,6 +618,10 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerConnectionTerminatedWithSession connectionTerminatedWithSession;
     // Copied at LiStartConnection(); only interpreted by the client callback.
     uint64_t connectionSessionId;
+    // Optional authored haptics. PCM payload is borrowed only for the callback duration.
+    // Register at most one authored format; NULL keeps each path disabled.
+    ConnListenerDs5HapticsPcm ds5HapticsPcm;
+    ConnListenerDs5HapticsIrV2 ds5HapticsIrV2;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -865,6 +935,7 @@ int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
 #define LI_CCAP_GYRO            0x20 // Can report gyroscope events via LiSendControllerMotionEvent()
 #define LI_CCAP_BATTERY_STATE   0x40 // Reports battery state via LiSendControllerBatteryEvent()
 #define LI_CCAP_RGB_LED         0x80 // Can set RGB LED state via ConnListenerSetControllerLED()
+#define LI_CCAP_DS5_HAPTICS_PCM  0x200 // Can render authored DualSense stereo PCM feedback
 int LiSendControllerArrivalEvent(uint8_t controllerNumber, uint16_t activeGamepadMask, uint8_t type,
                                  uint32_t supportedButtonFlags, uint16_t capabilities);
 
@@ -1051,6 +1122,11 @@ void LiRequestIdrFrame(void);
 // This function returns any extended feature flags supported by the host.
 #define LI_FF_PEN_TOUCH_EVENTS        0x01 // LiSendTouchEvent()/LiSendPenEvent() supported
 #define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported
+// Legacy authored-PCM availability. Shared-profile hosts additionally advertise
+// LI_FF_DS5_HAPTICS_CAPABILITIES_V2 to use nonconflicting client capability bits.
+#define LI_FF_DS5_HAPTICS_PCM        0x80
+#define LI_FF_DS5_HAPTICS_IR_V2      0x04000000 // Optional IR v2 support (never implied by PCM)
+#define LI_FF_DS5_HAPTICS_CAPABILITIES_V2 0x08000000
 #define LI_FF_SOURCE_FRAME_ID_V1     0x10000000 // Exact encoder-input ID in short frame header
 #define LI_FF_ATOMIC_PRESENTATION_MODE_V2 0x20000000 // Atomic SBS mode + quality control v2
 #define LI_FF_HOST_SBS_TELEMETRY_V2   0x40000000 // Apollo host SBS telemetry v2

@@ -114,6 +114,59 @@ static int submitDecodeUnit(PDECODE_UNIT unit) {
     return DR_OK;
 }
 
+static void unexpectedPcm(const LI_DS5_HAPTICS_PCM_FRAME* frame) { (void)frame; assert(false); }
+static void unexpectedIr(const LI_DS5_HAPTICS_IR_FRAME_V2* frame) { (void)frame; assert(false); }
+
+static uint32_t announcedClientFeatures(uint32_t hostFeatures, bool pcm, bool ir) {
+    SunshineFeatureFlags = hostFeatures;
+    ListenerCallbacks.ds5HapticsPcm = pcm ? unexpectedPcm : NULL;
+    ListenerCallbacks.ds5HapticsIrV2 = ir ? unexpectedIr : NULL;
+    StreamConfig.packetSize = 1392;
+    StreamConfig.encryptionFlags = 0;
+    EncryptionFeaturesRequested = EncryptionFeaturesSupported = EncryptionFeaturesEnabled = 0;
+    AudioEncryptionEnabled = false;
+    int length;
+    char* announce = getSdpPayloadForStreamConfig(13, &length, 0);
+    assert(announce && length > 0);
+    const char* attribute = "a=x-ml-general.featureFlags:";
+    const char* flags = strstr(announce, attribute);
+    assert(flags);
+    uint32_t value = (uint32_t)strtoul(flags + strlen(attribute), NULL, 10);
+    assert(strstr(flags + strlen(attribute), attribute) == NULL);
+    free(announce);
+    return value;
+}
+
+static void authoredHapticsSdpNegotiation(void) {
+    // Initialize the same production SDP inputs as a normal unencrypted stream.
+    SunshineFeatureFlags = 0;
+    announcePacketSize("", 1392, false, false, 1392);
+    const uint32_t shared = LI_FF_HOST_SBS_TELEMETRY_V2 |
+                            LI_FF_ATOMIC_PRESENTATION_MODE_V2 | LI_FF_SOURCE_FRAME_ID_V1;
+    const uint32_t marker = LI_FF_DS5_HAPTICS_CAPABILITIES_V2;
+    const struct { uint32_t host; uint32_t none, pcm, ir; } cases[] = {
+        {0, 0x1f, 0x1f, 0x1f},
+        {shared, 0x1f, 0x1f, 0x1f}, // Current Sunshine 3D has no authored-haptics backend.
+        {LI_FF_DS5_HAPTICS_PCM, 0x03, 0x07, 0x0b}, // Legacy client bits belong only to this profile.
+        {shared | LI_FF_DS5_HAPTICS_PCM, 0x1f, 0x1f, 0x1f},
+        {marker, 0x1f, 0x1f, 0x1f},
+        {marker | LI_FF_DS5_HAPTICS_PCM, 0x1f, 0x3f, 0x1f}, // PCM never implies optional IR.
+        {marker | LI_FF_DS5_HAPTICS_IR_V2, 0x1f, 0x1f, 0x5f},
+        {shared | marker | LI_FF_DS5_HAPTICS_PCM | LI_FF_DS5_HAPTICS_IR_V2, 0x1f, 0x3f, 0x5f},
+        {LI_FF_DS5_HAPTICS_IR_V2, 0x1f, 0x1f, 0x1f}, // The shared capability marker is required.
+        {LI_FF_DS5_HAPTICS_PCM, 0x03, 0x07, 0x0b}, // Reconnecting cannot retain a modern profile.
+        {shared, 0x1f, 0x1f, 0x1f}
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        assert(announcedClientFeatures(cases[i].host, false, false) == cases[i].none);
+        assert(announcedClientFeatures(cases[i].host, true, false) == cases[i].pcm);
+        assert(announcedClientFeatures(cases[i].host, false, true) == cases[i].ir);
+    }
+    ListenerCallbacks.ds5HapticsPcm = NULL;
+    ListenerCallbacks.ds5HapticsIrV2 = NULL;
+    SunshineFeatureFlags = 0;
+}
+
 static void recoverPacket(int maximum, int lostIndex, int codec, bool sourceIdSupported) {
     char sdp[100];
     snprintf(sdp, sizeof(sdp), "a=x-ss-video[0].maxPacketSize:%d\r\n", maximum);
@@ -349,5 +402,6 @@ int main(void) {
                 for (int supported = 0; supported < 2; ++supported)
                     recoverPacket(caps[c], losses[l], codecs[v], supported != 0);
     sourceIdentityHeaders();
+    authoredHapticsSdpNegotiation();
     return 0;
 }

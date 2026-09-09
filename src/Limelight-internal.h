@@ -37,9 +37,11 @@ extern uint16_t RtspPortNumber;
 extern uint16_t ControlPortNumber;
 extern uint16_t AudioPortNumber;
 extern uint16_t VideoPortNumber;
+extern uint16_t MicPortNumber;
 
 extern SS_PING AudioPingPayload;
 extern SS_PING VideoPingPayload;
+extern SS_PING MicPingPayload;
 extern uint32_t ControlConnectData;
 
 extern uint32_t SunshineFeatureFlags;
@@ -48,6 +50,12 @@ extern uint32_t SunshineFeatureFlags;
 #define SS_ENC_CONTROL_V2 0x01
 #define SS_ENC_VIDEO 0x02
 #define SS_ENC_AUDIO 0x04
+#define SS_ENC_MICROPHONE 0x08
+
+// Legacy VoidLink client-to-host Opus microphone packet values.
+#define MIC_PACKET_MAGIC 0x12345678
+#define MIC_PACKET_TYPE_OPUS 0x61
+#define MAX_MIC_PACKET_SIZE 1400
 
 extern uint32_t EncryptionFeaturesSupported;
 extern uint32_t EncryptionFeaturesRequested;
@@ -91,6 +99,10 @@ extern uint32_t EncryptionFeaturesEnabled;
 #define ML_FF_HOST_SBS_TELEMETRY_V2 0x04 // Client supports Apollo host SBS telemetry v2
 #define ML_FF_ATOMIC_PRESENTATION_MODE_V2 0x08 // Client supports atomic 0x3007/0x3008 v2
 #define ML_FF_SOURCE_FRAME_ID_V1 0x10 // Client supports exact encoder-input ID in short frame header
+
+// Nonconflicting authored-haptics client flags for the versioned shared profile.
+#define ML_FF_DS5_HAPTICS_PCM 0x20
+#define ML_FF_DS5_HAPTICS_IR_V2 0x40
 
 #define UDP_RECV_POLL_TIMEOUT_MS 100
 
@@ -150,6 +162,8 @@ int notifyAudioPortNegotiationComplete(void);
 void destroyAudioStream(void);
 int startAudioStream(void* audioContext, int arFlags);
 void stopAudioStream(void);
+
+int initializeMicrophoneStream(void);
 
 int initializeInputStream(void);
 void destroyInputStream(void);

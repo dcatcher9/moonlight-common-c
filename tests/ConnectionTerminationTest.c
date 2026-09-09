@@ -48,6 +48,22 @@ static bool legacyStopsConnection;
 static bool streamRunning;
 static int stoppedStreams;
 static int startedConnections;
+static int inputStartCalls;
+static bool requestMicrophone;
+static uint16_t negotiatedMicrophonePort;
+static bool microphoneRunning;
+static int microphoneStarts;
+static int microphoneStops;
+static int microphoneResult;
+static int microphoneCompletedStage;
+static bool interruptMicrophoneCompletion;
+
+static void stageComplete(int completedStage) {
+    if (completedStage == STAGE_MIC_STREAM_START || completedStage == STAGE_MIC_STREAM_UNSUPPORTED_OR_UNINITIALIZED) {
+        microphoneCompletedStage = completedStage;
+        if (interruptMicrophoneCompletion) LiInterruptConnection();
+    }
+}
 
 static void* testMalloc(size_t size) {
     if (failAllocation) {
@@ -147,8 +163,8 @@ static void legacyB(int errorCode) {
     }
 }
 
-static void startConnection(uint64_t sessionId, bool sessionAware,
-                            ConnListenerConnectionTerminated legacyCallback) {
+static int startConnectionWithResult(uint64_t sessionId, bool sessionAware,
+                                     ConnListenerConnectionTerminated legacyCallback) {
     SERVER_INFORMATION server = {0};
     STREAM_CONFIGURATION config = {0};
     CONNECTION_LISTENER_CALLBACKS callbacks = {0};
@@ -162,19 +178,27 @@ static void startConnection(uint64_t sessionId, bool sessionAware,
     config.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
     config.supportedVideoFormats = VIDEO_FORMAT_H264;
     config.streamingRemotely = STREAM_CFG_LOCAL;
+    config.redirectMic = requestMicrophone;
     callbacks.connectionStarted = connectionStarted;
     callbacks.connectionTerminated = legacyCallback;
     callbacks.connectionTerminatedWithSession = sessionAware ? sessionTerminated : NULL;
     callbacks.connectionSessionId = sessionId;
+    callbacks.stageComplete = stageComplete;
 
     CHECK(!streamRunning);
     currentSession = sessionId;
     int priorStarts = startedConnections;
-    CHECK(LiStartConnection(&server, &config, &callbacks, NULL, NULL, NULL, 0, NULL, 0) == 0);
-    CHECK(startedConnections == priorStarts + 1);
-    CHECK(streamRunning && !ConnectionInterrupted);
+    int result = LiStartConnection(&server, &config, &callbacks, NULL, NULL, NULL, 0, NULL, 0);
+    CHECK(startedConnections == priorStarts + (result == 0 ? 1 : 0));
+    CHECK(result == 0 ? streamRunning && !ConnectionInterrupted : !streamRunning);
     // Overwriting the caller's stack structure must not alter the copied session.
     memset(&callbacks, 0, sizeof(callbacks));
+    return result;
+}
+
+static void startConnection(uint64_t sessionId, bool sessionAware,
+                            ConnListenerConnectionTerminated legacyCallback) {
+    CHECK(startConnectionWithResult(sessionId, sessionAware, legacyCallback) == 0);
 }
 
 static void resetTest(void) {
@@ -186,6 +210,10 @@ static void resetTest(void) {
     legacyACalls = legacyBCalls = legacyAError = legacyBError = 0;
     legacyStopsConnection = failAllocation = failThreadCreation = false;
     invokeThreadImmediately = false;
+    CHECK(!microphoneRunning);
+    requestMicrophone = interruptMicrophoneCompletion = false;
+    negotiatedMicrophonePort = 0;
+    microphoneResult = microphoneCompletedStage = 0;
 }
 
 static void testDelayedCallbackAfterReconnect(void) {
@@ -307,14 +335,25 @@ int resolveHostName(const char* host, int family, int port, struct sockaddr_stor
 bool isPrivateNetworkAddress(struct sockaddr_storage* address) { (void)address; return true; }
 bool isNat64SynthesizedAddress(struct sockaddr_storage* address) { (void)address; return false; }
 int initializeAudioStream(void) { return 0; }
-int performRtspHandshake(PSERVER_INFORMATION server) { (void)server; return 0; }
+int performRtspHandshake(PSERVER_INFORMATION server) { (void)server; MicPortNumber = negotiatedMicrophonePort; return 0; }
 int initializeControlStream(void) { return 0; }
 void initializeVideoStream(void) {}
 int initializeInputStream(void) { return 0; }
 int startControlStream(void) { return 0; }
 int startVideoStream(void* context, int flags) { (void)context; (void)flags; return 0; }
 int startAudioStream(void* context, int flags) { (void)context; (void)flags; return 0; }
-int startInputStream(void) { streamRunning = true; return 0; }
+int startInputStream(void) { streamRunning = true; inputStartCalls++; return 0; }
+int initializeMicrophoneStream(void) {
+    CHECK(requestMicrophone && MicPortNumber != 0 && !microphoneRunning);
+    microphoneStarts++;
+    if (microphoneResult == 0) microphoneRunning = true;
+    return microphoneResult;
+}
+void destroyMicrophoneStream(void) {
+    CHECK(microphoneRunning);
+    microphoneStops++;
+    microphoneRunning = false;
+}
 int stopInputStream(void) { CHECK(streamRunning); streamRunning = false; stoppedStreams++; return 0; }
 void stopAudioStream(void) {}
 void stopVideoStream(void) {}
@@ -326,14 +365,47 @@ void destroyAudioStream(void) {}
 int LiSendMouseMoveEvent(short x, short y) { (void)x; (void)y; return 0; }
 void PltSleepMs(int ms) { (void)ms; }
 
+static void testMicrophoneLifecycle(void) {
+    resetTest();
+    int initialMicStarts = microphoneStarts;
+    startConnection(10, true, NULL);
+    CHECK(microphoneStarts == initialMicStarts && microphoneCompletedStage == 0);
+    LiStopConnection();
+
+    requestMicrophone = true;
+    startConnection(11, true, NULL);
+    CHECK(microphoneStarts == initialMicStarts);
+    CHECK(microphoneCompletedStage == STAGE_MIC_STREAM_UNSUPPORTED_OR_UNINITIALIZED);
+    LiStopConnection();
+
+    negotiatedMicrophonePort = 48001;
+    startConnection(12, true, NULL);
+    CHECK(microphoneRunning && microphoneCompletedStage == STAGE_MIC_STREAM_START);
+    ListenerCallbacks.connectionTerminated(-12);
+    deliverNext(); // Session-aware callback stops all streams, including microphone.
+    CHECK(!microphoneRunning && microphoneStops == 1);
+
+    microphoneResult = -73;
+    CHECK(startConnectionWithResult(13, true, NULL) == -73);
+    CHECK(!streamRunning && !microphoneRunning && microphoneStops == 1);
+
+    microphoneResult = 0;
+    interruptMicrophoneCompletion = true;
+    CHECK(startConnectionWithResult(14, true, NULL) != 0);
+    CHECK(!streamRunning && !microphoneRunning && microphoneStops == 2);
+    resetTest();
+    puts("PASS: microphone disabled/unsupported stages, callback stop, partial failure and startup cancellation");
+}
+
 int main(void) {
     testDelayedCallbackAfterReconnect();
     testBothSessionsQueued();
     testLegacyCallbacks();
     testSchedulingFailures();
     testCallbackBeforeThreadCreationReturns();
+    testMicrophoneLifecycle();
     resetTest();
-    CHECK(stoppedStreams == startedConnections);
+    CHECK(stoppedStreams == inputStartCalls);
     puts("Connection termination tests passed (controlled dispatch, stubbed transport).");
     return 0;
 }

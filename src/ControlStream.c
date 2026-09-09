@@ -1,4 +1,6 @@
 #include "Limelight-internal.h"
+#include "Ds5HapticsStream.h"
+#include "Ds5HapticsIrStream.h"
 
 // This is a private header, but it just contains some time macros
 #include <enet/time.h>
@@ -1273,6 +1275,42 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
     }
 }
 
+static void dispatchDs5HapticsPcm(const LI_DS5_HAPTICS_PCM_FRAME* frame, void* context) {
+    (void)context;
+    ListenerCallbacks.ds5HapticsPcm(frame);
+}
+
+static void dispatchDs5HapticsIrV2(const LI_DS5_HAPTICS_IR_FRAME_V2* frame, void* context) {
+    (void)context;
+    ListenerCallbacks.ds5HapticsIrV2(frame);
+}
+
+// The payload belongs to the current control packet and is borrowed only during
+// the callback. Clients must copy it before returning and must not block receive.
+static bool dispatchAuthoredHaptics(PNVCTL_ENET_PACKET_HEADER_V1 packet, int packetLength) {
+    if (packet == NULL || packetLength < (int)sizeof(*packet) || !IS_SUNSHINE() ||
+            packetTypes != packetTypesGen7Enc) {
+        return false;
+    }
+    const uint8_t* payload = (const uint8_t*)(packet + 1);
+    const int payloadLength = packetLength - (int)sizeof(*packet);
+    if (packet->type == DS5_HAPTICS_PCM_CONTROL_TYPE) {
+        if (ListenerCallbacks.ds5HapticsPcm != NULL &&
+                supportsDs5HapticsPcm(SunshineFeatureFlags)) {
+            processDs5HapticsStreamPacket(payload, payloadLength, dispatchDs5HapticsPcm, NULL);
+        }
+        return true;
+    }
+    if (packet->type == DS5_HAPTICS_IR_CONTROL_TYPE) {
+        if (ListenerCallbacks.ds5HapticsIrV2 != NULL &&
+                supportsDs5HapticsIrV2(SunshineFeatureFlags)) {
+            processDs5HapticsIrStreamPacket(payload, payloadLength, dispatchDs5HapticsIrV2, NULL);
+        }
+        return true;
+    }
+    return false;
+}
+
 static void controlReceiveThreadFunc(void* context) {
     int err;
 
@@ -1479,6 +1517,9 @@ static void controlReceiveThreadFunc(void* context) {
             }
             else if (needsAsyncCallback(ctlHdr->type)) {
                 queueAsyncCallback(ctlHdr, packetLength);
+            }
+            else if (dispatchAuthoredHaptics(ctlHdr, packetLength)) {
+                // The client has copied any PCM it needs before ctlHdr is freed below.
             }
             else if (ctlHdr->type == packetTypes[IDX_TERMINATION]) {
                 BYTE_BUFFER bb;

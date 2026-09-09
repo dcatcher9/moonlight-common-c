@@ -1,0 +1,46 @@
+name: Shared client feature compatibility
+
+on:
+  push:
+    branches: [moonlight-noir]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Prepare crypto dependency
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew --prefix openssl@3 >/dev/null 2>&1 || brew install openssl@3
+            echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev
+          fi
+      - name: Build production core and feature regressions
+        shell: bash
+        run: |
+          cmake -S . -B build-features -DCMAKE_BUILD_TYPE=Debug \
+            -DLC_BUILD_CONNECTION_TERMINATION_TESTS=ON \
+            -DLC_BUILD_PLATFORM_THREAD_TESTS=ON \
+            -DLC_BUILD_MICROPHONE_TESTS=ON \
+            -DLC_BUILD_AUTHORED_HAPTICS_TESTS=ON \
+            -DLC_BUILD_PACKET_SIZE_TESTS=ON \
+            -DLC_BUILD_INPUT_STREAM_TESTS=ON \
+            -DLC_BUILD_AUDIO_QUEUE_TESTS=ON
+          cmake --build build-features --parallel 2
+      - name: Test transport, callbacks, and real native thread ownership
+        run: ctest --test-dir build-features --output-on-failure --timeout 30

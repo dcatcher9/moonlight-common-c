@@ -36,8 +36,10 @@ uint16_t RtspPortNumber;
 uint16_t ControlPortNumber;
 uint16_t AudioPortNumber;
 uint16_t VideoPortNumber;
+uint16_t MicPortNumber;
 SS_PING AudioPingPayload;
 SS_PING VideoPingPayload;
+SS_PING MicPingPayload;
 uint32_t ControlConnectData;
 uint32_t SunshineFeatureFlags;
 uint32_t EncryptionFeaturesSupported;
@@ -57,7 +59,9 @@ static const char* stageNames[STAGE_MAX] = {
     "control stream establishment",
     "video stream establishment",
     "audio stream establishment",
-    "input stream establishment"
+    "input stream establishment",
+    "microphone stream establishment",
+    "microphone stream unsupported or uninitialized"
 };
 
 // Get the name of the current stage based on its number
@@ -80,6 +84,12 @@ void LiStopConnection(void) {
     // Set the interrupted flag
     LiInterruptConnection();
 
+    if (stage == STAGE_MIC_STREAM_START) {
+        Limelog("Stopping microphone stream...");
+        destroyMicrophoneStream();
+        stage--;
+        Limelog("done\n");
+    }
     if (stage == STAGE_INPUT_STREAM_START) {
         Limelog("Stopping input stream...");
         stopInputStream();
@@ -239,6 +249,12 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     void* audioContext, int arFlags) {
     int err;
 
+    if (clCallbacks != NULL && clCallbacks->ds5HapticsPcm != NULL && clCallbacks->ds5HapticsIrV2 != NULL) {
+        Limelog("Only one authored DualSense haptics format can be selected\n");
+        err = -1;
+        goto Cleanup;
+    }
+
     if (drCallbacks != NULL && (drCallbacks->capabilities & CAPABILITY_PULL_RENDERER) && drCallbacks->submitDecodeUnit) {
         Limelog("CAPABILITY_PULL_RENDERER cannot be set with a submitDecodeUnit callback\n");
         LC_ASSERT(false);
@@ -298,6 +314,8 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     VideoPortNumber = 0;
     ControlPortNumber = 0;
     AudioPortNumber = 0;
+    MicPortNumber = 0;
+    memset(&MicPingPayload, 0, sizeof(MicPingPayload));
 
     // Parse RTSP port number from RTSP session URL
     if (!parseRtspPortNumberFromUrl(serverInfo->rtspSessionUrl, &RtspPortNumber)) {
@@ -548,6 +566,32 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     LC_ASSERT(stage == STAGE_INPUT_STREAM_START);
     ListenerCallbacks.stageComplete(STAGE_INPUT_STREAM_START);
     Limelog("done\n");
+
+    if (ConnectionInterrupted) {
+        err = -1;
+        goto Cleanup;
+    }
+    if (StreamConfig.redirectMic) {
+        ListenerCallbacks.stageStarting(STAGE_MIC_STREAM_START);
+        if (MicPortNumber != 0) {
+            err = initializeMicrophoneStream();
+            if (err != 0) {
+                Limelog("Microphone stream start failed: %d\n", err);
+                ListenerCallbacks.stageFailed(STAGE_MIC_STREAM_START, err);
+                goto Cleanup;
+            }
+            stage++;
+            LC_ASSERT(stage == STAGE_MIC_STREAM_START);
+            ListenerCallbacks.stageComplete(STAGE_MIC_STREAM_START);
+        }
+        else {
+            ListenerCallbacks.stageComplete(STAGE_MIC_STREAM_UNSUPPORTED_OR_UNINITIALIZED);
+        }
+    }
+    if (ConnectionInterrupted) {
+        err = -1;
+        goto Cleanup;
+    }
     
     // Wiggle the mouse a bit to wake the display up
     LiSendMouseMoveEvent(1, 1);

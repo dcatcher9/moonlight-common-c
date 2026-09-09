@@ -940,6 +940,8 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     hasSessionId = false;
     controlStreamId = APP_VERSION_AT_LEAST(7, 1, 431) ? "streamid=control/13/0" : "streamid=control/1/0";
     AudioEncryptionEnabled = false;
+    MicPortNumber = 0;
+    memset(&MicPingPayload, 0, sizeof(MicPingPayload));
     encryptedRtspEnabled = serverInfo->rtspSessionUrl && strstr(serverInfo->rtspSessionUrl, "rtspenc://");
     encryptionCtx = PltCreateCryptoContext();
     decryptionCtx = PltCreateCryptoContext();
@@ -1272,6 +1274,38 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
         freeMessage(&response);
     }
     
+    // Microphone is optional. An unsupported stream or unusable port must not
+    // prevent ordinary video/audio streaming, and must never send to port zero.
+    if (StreamConfig.redirectMic) {
+        RTSP_MESSAGE response;
+        int error = -1;
+
+        if (!setupStream(&response, AppVersionQuad[0] >= 5 ? "streamid=mic/0/0" : "streamid=mic", &error)) {
+            Limelog("RTSP SETUP streamid=mic request failed: %d\n", error);
+            // A cancelled handshake is not an unsupported optional feature.
+            if (ConnectionInterrupted) {
+                ret = error;
+                goto Exit;
+            }
+        }
+        else {
+            if (response.message.response.statusCode != 200) {
+                Limelog("Microphone stream unavailable: RTSP %d\n", response.message.response.statusCode);
+            }
+            else if (!parseServerPortFromTransport(&response, &MicPortNumber)) {
+                Limelog("Microphone stream unavailable: missing or invalid server port\n");
+            }
+            else {
+                char* pingPayload = getOptionContent(response.options, "X-SS-Ping-Payload");
+                if (pingPayload != NULL && strlen(pingPayload) == sizeof(MicPingPayload.payload)) {
+                    memcpy(MicPingPayload.payload, pingPayload, sizeof(MicPingPayload.payload));
+                }
+                Limelog("Microphone port: %u\n", MicPortNumber);
+            }
+            freeMessage(&response);
+        }
+    }
+
     if (AppVersionQuad[0] >= 5) {
         RTSP_MESSAGE response;
         int error = -1;
@@ -1396,10 +1430,33 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
 
             freeMessage(&response);
         }
+        // Older RTSP versions play each stream separately. Only request the
+        // optional stream when SETUP actually returned a usable microphone port.
+        if (MicPortNumber != 0) {
+            RTSP_MESSAGE response;
+            int error = -1;
+
+            if (!playStream(&response, "streamid=mic", &error)) {
+                Limelog("RTSP PLAY streamid=mic request failed: %d\n", error);
+                MicPortNumber = 0;
+                memset(&MicPingPayload, 0, sizeof(MicPingPayload));
+                if (ConnectionInterrupted) {
+                    ret = error;
+                    goto Exit;
+                }
+            }
+            else {
+                if (response.message.response.statusCode != 200) {
+                    Limelog("Microphone stream unavailable: RTSP PLAY %d\n", response.message.response.statusCode);
+                    MicPortNumber = 0;
+                    memset(&MicPingPayload, 0, sizeof(MicPingPayload));
+                }
+                freeMessage(&response);
+            }
+        }
     }
 
-    
-    ret = 0;
+    ret = ConnectionInterrupted ? -1 : 0;
     
 Exit:
     // Cleanup the ENet stuff

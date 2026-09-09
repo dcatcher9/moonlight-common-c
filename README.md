@@ -4,6 +4,12 @@ Moonlight-common-c contains the core GameStream client code shared between [Moon
 
 If you are implementing your own Moonlight game streaming client that can use a C library, you probably want the code here.
 
+This fork also preserves optional client-to-host Opus microphone transport and authored
+DualSense PCM haptics. See [shared client feature compatibility](docs/client-feature-migration.md)
+for capability negotiation, legacy-host support, client-local responsibilities, and the
+host backends required for physical qualification. Features remain opt-in; adopting the
+shared core does not register a haptics callback or enable microphone capture by itself.
+
 ## Note to Developers
 
 Moonlight-common-c requires the _specific_ version of ENet that is bundled as a submodule. This version has changes required for IPv6 compatibility and retransmission reliability, among other things. These are breaking API/ABI changes which make Moonlight-common-c incompatible with other versions of the ENet library. Attempting to runtime link to another libenet library will cause your client to crash when connecting to recent versions of GeForce Experience.

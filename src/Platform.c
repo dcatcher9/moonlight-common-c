@@ -83,11 +83,13 @@ void* ThreadProc(void* context) {
     pthread_setname_np(ctx->name);
 #endif
 
-    ctx->entry(ctx->context);
-
-#if defined(__vita__)
-free(ctx);
-#endif
+    // This allocation belongs to the trampoline on every platform. Release it
+    // before client code runs, since an entry may exit its thread directly.
+    // The entry's context remains owned by its caller/entry, not the trampoline.
+    ThreadEntry entry = ctx->entry;
+    void* entryContext = ctx->context;
+    free(ctx);
+    entry(entryContext);
 
 #if defined(LC_WINDOWS) || defined(__vita__) || defined(__WIIU__) || defined(__3DS__)
     return 0;
