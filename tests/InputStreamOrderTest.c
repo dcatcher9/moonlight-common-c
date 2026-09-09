@@ -2,11 +2,16 @@
 #include "LinkedBlockingQueue.h"
 
 #include <Limelight.h>
-#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+// Platform.h defines NDEBUG for POSIX consumers without LC_DEBUG. Checks here
+// also perform setup and enqueue work, so they must run in every build mode.
+#define CHECK(condition) do { if (!(condition)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); abort(); } } while (0)
 
 static LiTestInputPacket pollPacket(void) {
     LiTestInputPacket packet;
-    assert(LiTestPollInputPacket(&packet) == 1);
+    CHECK(LiTestPollInputPacket(&packet) == 1);
     return packet;
 }
 
@@ -31,178 +36,178 @@ static void testItemCountUsesQueueSynchronization(void) {
     ITEM_COUNT_TEST_CONTEXT context = { 0 };
     PLT_THREAD thread;
 
-    assert(LbqInitializeLinkedBlockingQueue(&queue, 4) == 0);
-    assert(PltCreateEvent(&context.started) == 0);
-    assert(PltCreateMutex(&context.completionMutex) == 0);
+    CHECK(LbqInitializeLinkedBlockingQueue(&queue, 4) == 0);
+    CHECK(PltCreateEvent(&context.started) == 0);
+    CHECK(PltCreateMutex(&context.completionMutex) == 0);
     context.queue = &queue;
 
     PltLockMutex(&queue.mutex);
-    assert(PltCreateThread("ItemCountTest", readItemCount, &context, &thread) == 0);
+    CHECK(PltCreateThread("ItemCountTest", readItemCount, &context, &thread) == 0);
     PltWaitForEvent(&context.started);
     PltSleepMs(50);
 
     PltLockMutex(&context.completionMutex);
-    assert(!context.completed);
+    CHECK(!context.completed);
     PltUnlockMutex(&context.completionMutex);
 
     PltUnlockMutex(&queue.mutex);
     PltJoinThread(&thread);
-    assert(context.completed);
+    CHECK(context.completed);
 
     PltDeleteMutex(&context.completionMutex);
     PltCloseEvent(&context.started);
-    assert(LbqDestroyLinkedBlockingQueue(&queue) == NULL);
+    CHECK(LbqDestroyLinkedBlockingQueue(&queue) == NULL);
 }
 
 static void testRelativeMotionDoesNotCrossButton(void) {
-    assert(LiTestInitializeInputStream() == 0);
+    CHECK(LiTestInitializeInputStream() == 0);
 
-    assert(LiSendMouseMoveEvent(1, 0) == 0);
-    assert(LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT) == 0);
-    assert(LiSendMouseMoveEvent(2, 0) == 0);
+    CHECK(LiSendMouseMoveEvent(1, 0) == 0);
+    CHECK(LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT) == 0);
+    CHECK(LiSendMouseMoveEvent(2, 0) == 0);
 
     LiTestInputPacket first = pollPacket();
-    assert(first.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
-    assert(first.x == 1 && first.y == 0);
+    CHECK(first.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
+    CHECK(first.x == 1 && first.y == 0);
     // MOVE is followed by DOWN, so the specialized relative sender must keep
     // ENet batching open for the packet which remains queued.
-    assert(first.moreData);
+    CHECK(first.moreData);
 
     LiTestInputPacket second = pollPacket();
-    assert(second.type == LI_TEST_INPUT_PACKET_MOUSE_BUTTON);
-    assert(second.button == BUTTON_LEFT);
+    CHECK(second.type == LI_TEST_INPUT_PACKET_MOUSE_BUTTON);
+    CHECK(second.button == BUTTON_LEFT);
 
     LiTestInputPacket third = pollPacket();
-    assert(third.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
-    assert(third.x == 2 && third.y == 0);
-    assert(!third.moreData);
+    CHECK(third.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
+    CHECK(third.x == 2 && third.y == 0);
+    CHECK(!third.moreData);
 
     LiTestDestroyInputStream();
 }
 
 static void testAbsoluteMotionDoesNotCrossButton(void) {
-    assert(LiTestInitializeInputStream() == 0);
+    CHECK(LiTestInitializeInputStream() == 0);
 
-    assert(LiSendMousePositionEvent(10, 20, 1920, 1080) == 0);
-    assert(LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT) == 0);
-    assert(LiSendMousePositionEvent(30, 40, 1920, 1080) == 0);
+    CHECK(LiSendMousePositionEvent(10, 20, 1920, 1080) == 0);
+    CHECK(LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT) == 0);
+    CHECK(LiSendMousePositionEvent(30, 40, 1920, 1080) == 0);
 
     LiTestInputPacket first = pollPacket();
-    assert(first.type == LI_TEST_INPUT_PACKET_ABSOLUTE_MOVE);
-    assert(first.x == 10 && first.y == 20);
-    assert(first.width == 1920 && first.height == 1080);
-    assert(first.moreData);
+    CHECK(first.type == LI_TEST_INPUT_PACKET_ABSOLUTE_MOVE);
+    CHECK(first.x == 10 && first.y == 20);
+    CHECK(first.width == 1920 && first.height == 1080);
+    CHECK(first.moreData);
 
     LiTestInputPacket second = pollPacket();
-    assert(second.type == LI_TEST_INPUT_PACKET_MOUSE_BUTTON);
-    assert(second.button == BUTTON_LEFT);
+    CHECK(second.type == LI_TEST_INPUT_PACKET_MOUSE_BUTTON);
+    CHECK(second.button == BUTTON_LEFT);
 
     LiTestInputPacket third = pollPacket();
-    assert(third.type == LI_TEST_INPUT_PACKET_ABSOLUTE_MOVE);
-    assert(third.x == 30 && third.y == 40);
-    assert(!third.moreData);
+    CHECK(third.type == LI_TEST_INPUT_PACKET_ABSOLUTE_MOVE);
+    CHECK(third.x == 30 && third.y == 40);
+    CHECK(!third.moreData);
 
     LiTestDestroyInputStream();
 }
 
 static void testRelativeMotionDoesNotCrossScroll(void) {
-    assert(LiTestInitializeInputStream() == 0);
+    CHECK(LiTestInitializeInputStream() == 0);
 
-    assert(LiSendMouseMoveEvent(1, 0) == 0);
-    assert(LiSendHighResScrollEvent(120) == 0);
-    assert(LiSendMouseMoveEvent(2, 0) == 0);
+    CHECK(LiSendMouseMoveEvent(1, 0) == 0);
+    CHECK(LiSendHighResScrollEvent(120) == 0);
+    CHECK(LiSendMouseMoveEvent(2, 0) == 0);
 
     LiTestInputPacket first = pollPacket();
-    assert(first.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
-    assert(first.x == 1 && first.y == 0);
-    assert(first.moreData);
+    CHECK(first.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
+    CHECK(first.x == 1 && first.y == 0);
+    CHECK(first.moreData);
 
     LiTestInputPacket second = pollPacket();
-    assert(second.type == LI_TEST_INPUT_PACKET_SCROLL);
+    CHECK(second.type == LI_TEST_INPUT_PACKET_SCROLL);
 
     LiTestInputPacket third = pollPacket();
-    assert(third.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
-    assert(third.x == 2 && third.y == 0);
+    CHECK(third.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
+    CHECK(third.x == 2 && third.y == 0);
 
     LiTestDestroyInputStream();
 }
 
 static void testRelativeMotionDoesNotCrossKeyboard(void) {
-    assert(LiTestInitializeInputStream() == 0);
+    CHECK(LiTestInitializeInputStream() == 0);
 
-    assert(LiSendMouseMoveEvent(1, 0) == 0);
-    assert(LiSendKeyboardEvent(0x41, KEY_ACTION_DOWN, 0) == 0);
-    assert(LiSendMouseMoveEvent(2, 0) == 0);
+    CHECK(LiSendMouseMoveEvent(1, 0) == 0);
+    CHECK(LiSendKeyboardEvent(0x41, KEY_ACTION_DOWN, 0) == 0);
+    CHECK(LiSendMouseMoveEvent(2, 0) == 0);
 
     LiTestInputPacket first = pollPacket();
-    assert(first.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
-    assert(first.x == 1 && first.y == 0);
-    assert(first.moreData);
+    CHECK(first.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
+    CHECK(first.x == 1 && first.y == 0);
+    CHECK(first.moreData);
 
     LiTestInputPacket second = pollPacket();
-    assert(second.type == LI_TEST_INPUT_PACKET_KEYBOARD);
+    CHECK(second.type == LI_TEST_INPUT_PACKET_KEYBOARD);
 
     LiTestInputPacket third = pollPacket();
-    assert(third.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
-    assert(third.x == 2 && third.y == 0);
+    CHECK(third.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
+    CHECK(third.x == 2 && third.y == 0);
 
     LiTestDestroyInputStream();
 }
 
 static void testDestroyClearsPendingMouseAliases(void) {
-    assert(LiTestInitializeInputStream() == 0);
-    assert(LiSendMouseMoveEvent(1, 0) == 0);
-    assert(LiTestHasPendingRelativeMouseHolder());
-    assert(!LiTestHasPendingAbsoluteMouseHolder());
+    CHECK(LiTestInitializeInputStream() == 0);
+    CHECK(LiSendMouseMoveEvent(1, 0) == 0);
+    CHECK(LiTestHasPendingRelativeMouseHolder());
+    CHECK(!LiTestHasPendingAbsoluteMouseHolder());
 
     LiTestDestroyInputStream();
 
-    assert(!LiTestHasPendingRelativeMouseHolder());
-    assert(!LiTestHasPendingAbsoluteMouseHolder());
+    CHECK(!LiTestHasPendingRelativeMouseHolder());
+    CHECK(!LiTestHasPendingAbsoluteMouseHolder());
 }
 
 static void testRelativeAccumulatorDoesNotOverflowSignedInt(void) {
-    assert(LiTestInitializeInputStream() == 0);
+    CHECK(LiTestInitializeInputStream() == 0);
 
     for (int i = 0; i < 65539; i++) {
-        assert(LiSendMouseMoveEvent(INT16_MAX, 0) == 0);
+        CHECK(LiSendMouseMoveEvent(INT16_MAX, 0) == 0);
     }
 
     LiTestInputPacket packet = pollPacket();
-    assert(packet.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
-    assert(packet.x == (int64_t)INT16_MAX * 65539);
+    CHECK(packet.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
+    CHECK(packet.x == (int64_t)INT16_MAX * 65539);
 
     LiTestDestroyInputStream();
 }
 
 static void testQueueFailureDoesNotRetainFailedMouseHolder(void) {
-    assert(LiTestInitializeInputStream() == 0);
+    CHECK(LiTestInitializeInputStream() == 0);
 
     for (int i = 0; i < 150; i++) {
-        assert(LiSendKeyboardEvent(0x41, KEY_ACTION_DOWN, 0) == 0);
+        CHECK(LiSendKeyboardEvent(0x41, KEY_ACTION_DOWN, 0) == 0);
     }
-    assert(LiSendMouseMoveEvent(1, 0) != 0);
-    assert(!LiTestHasPendingRelativeMouseHolder());
-    assert(!LiTestHasPendingAbsoluteMouseHolder());
+    CHECK(LiSendMouseMoveEvent(1, 0) != 0);
+    CHECK(!LiTestHasPendingRelativeMouseHolder());
+    CHECK(!LiTestHasPendingAbsoluteMouseHolder());
 
     LiTestDestroyInputStream();
 }
 
 static void testZeroNetRelativeMotionFlushesEarlierInput(void) {
-    assert(LiTestInitializeInputStream() == 0);
+    CHECK(LiTestInitializeInputStream() == 0);
 
-    assert(LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT) == 0);
-    assert(LiSendMouseMoveEvent(1, 0) == 0);
-    assert(LiSendMouseMoveEvent(-1, 0) == 0);
+    CHECK(LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT) == 0);
+    CHECK(LiSendMouseMoveEvent(1, 0) == 0);
+    CHECK(LiSendMouseMoveEvent(-1, 0) == 0);
 
     LiTestInputPacket button = pollPacket();
-    assert(button.type == LI_TEST_INPUT_PACKET_MOUSE_BUTTON);
-    assert(button.moreData);
+    CHECK(button.type == LI_TEST_INPUT_PACKET_MOUSE_BUTTON);
+    CHECK(button.moreData);
 
     LiTestInputPacket motion = pollPacket();
-    assert(motion.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
-    assert(motion.x == 0 && motion.y == 0);
-    assert(LiTestGetEmptyRelativeMotionFlushCount() == 1);
+    CHECK(motion.type == LI_TEST_INPUT_PACKET_RELATIVE_MOVE);
+    CHECK(motion.x == 0 && motion.y == 0);
+    CHECK(LiTestGetEmptyRelativeMotionFlushCount() == 1);
 
     LiTestDestroyInputStream();
 }
