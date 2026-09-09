@@ -832,6 +832,10 @@ int LiTestInitializeInputStream(void) {
 
 void LiTestDestroyInputStream(void) {
     initialized = false;
+    // Match stopInputStream()'s queue lifecycle without joining a send thread
+    // that this synchronous fixture never creates.
+    LbqSignalQueueShutdown(&packetHolderFreeList);
+    LbqSignalQueueDrain(&packetQueue);
     destroyInputStream();
 }
 
