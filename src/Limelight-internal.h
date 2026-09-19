@@ -103,6 +103,7 @@ extern uint32_t EncryptionFeaturesEnabled;
 // Nonconflicting authored-haptics client flags for the versioned shared profile.
 #define ML_FF_DS5_HAPTICS_PCM 0x20
 #define ML_FF_DS5_HAPTICS_IR_V2 0x40
+#define ML_FF_GAME_PROVIDER_V1 0x80 // Requires atomic v2; provider status and modes 2/3
 
 #define UDP_RECV_POLL_TIMEOUT_MS 100
 

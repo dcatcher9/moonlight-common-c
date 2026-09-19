@@ -147,12 +147,15 @@ static void authoredHapticsSdpNegotiation(void) {
     const struct { uint32_t host; uint32_t none, pcm, ir; } cases[] = {
         {0, 0x1f, 0x1f, 0x1f},
         {shared, 0x1f, 0x1f, 0x1f}, // Current Sunshine 3D has no authored-haptics backend.
+        {LI_FF_GAME_PROVIDER_V1, 0x1f, 0x1f, 0x1f}, // Game requires atomic v2 in both directions.
+        {shared | LI_FF_GAME_PROVIDER_V1, 0x9f, 0x9f, 0x9f},
         {LI_FF_DS5_HAPTICS_PCM, 0x03, 0x07, 0x0b}, // Legacy client bits belong only to this profile.
         {shared | LI_FF_DS5_HAPTICS_PCM, 0x1f, 0x1f, 0x1f},
         {marker, 0x1f, 0x1f, 0x1f},
         {marker | LI_FF_DS5_HAPTICS_PCM, 0x1f, 0x3f, 0x1f}, // PCM never implies optional IR.
         {marker | LI_FF_DS5_HAPTICS_IR_V2, 0x1f, 0x1f, 0x5f},
         {shared | marker | LI_FF_DS5_HAPTICS_PCM | LI_FF_DS5_HAPTICS_IR_V2, 0x1f, 0x3f, 0x5f},
+        {shared | LI_FF_GAME_PROVIDER_V1 | marker | LI_FF_DS5_HAPTICS_PCM | LI_FF_DS5_HAPTICS_IR_V2, 0x9f, 0xbf, 0xdf},
         {LI_FF_DS5_HAPTICS_IR_V2, 0x1f, 0x1f, 0x1f}, // The shared capability marker is required.
         {LI_FF_DS5_HAPTICS_PCM, 0x03, 0x07, 0x0b}, // Reconnecting cannot retain a modern profile.
         {shared, 0x1f, 0x1f, 0x1f}

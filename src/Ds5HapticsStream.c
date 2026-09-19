@@ -4,7 +4,7 @@
 #include <string.h>
 
 bool usesLegacyDs5HapticsCapabilities(uint32_t hostFeatures) {
-    const uint32_t sharedProfile = LI_FF_HOST_SBS_TELEMETRY_V2 |
+    const uint32_t sharedProfile = LI_FF_GAME_PROVIDER_V1 | LI_FF_HOST_SBS_TELEMETRY_V2 |
                                    LI_FF_ATOMIC_PRESENTATION_MODE_V2 |
                                    LI_FF_SOURCE_FRAME_ID_V1 |
                                    LI_FF_DS5_HAPTICS_IR_V2 |

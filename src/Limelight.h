@@ -548,6 +548,19 @@ typedef void(*ConnListenerVideoModeAckV2)(uint8_t status, uint8_t appliedMode, u
 typedef void(*ConnListenerHostSbsTelemetryState)(
     const uint8_t payload[HOST_SBS_TELEMETRY_STATE_SIZE]);
 
+// Versioned 20-byte provider state, independent of the correlated presentation ACK.
+#define GAME_SOURCE_STATUS_VERSION 1
+#define GAME_SOURCE_STATUS_SIZE 20
+#define GAME_SOURCE_WAITING 0
+#define GAME_SOURCE_READY 1
+#define GAME_SOURCE_UNSUPPORTED 2
+#define GAME_PROVIDER_NONE 0
+#define GAME_PROVIDER_RESHADE 1
+typedef void(*ConnListenerGameSourceStatus)(uint8_t state, uint8_t provider,
+                                            uint32_t presentationGeneration, uint32_t sourceRevision,
+                                            uint16_t sourceWidth, uint16_t sourceHeight,
+                                            uint16_t packedWidth, uint16_t packedHeight);
+
 // Authored DualSense haptics captured from the host's virtual USB audio
 // endpoint. PCM is signed 16-bit little-endian, interleaved haptic-left then
 // haptic-right. The buffer is valid only for the duration of the callback.
@@ -622,6 +635,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     // Register at most one authored format; NULL keeps each path disabled.
     ConnListenerDs5HapticsPcm ds5HapticsPcm;
     ConnListenerDs5HapticsIrV2 ds5HapticsIrV2;
+    ConnListenerGameSourceStatus gameSourceStatus;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -698,7 +712,9 @@ bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVarianc
 
 // Host-side SBS modes carried by atomic-presentation v2 and the launch-time SBS setting.
 #define SBS_MODE_OFF 0 // No host depth; host emits a plain W x H frame.
-#define SBS_MODE_AI  1 // Enable the host's startup-profile pipeline; host emits 2W x H.
+#define SBS_MODE_AI  1 // Host AI depth pipeline; host emits 2W x H.
+#define SBS_MODE_GAME_MONO 2 // Provider armed; host emits ordinary W x H.
+#define SBS_MODE_GAME_SBS 3 // Exact provider SBS or duplicate-eye fallback; emits 2W x H.
 
 // This function asks the host (Apollo protocol extension) to dump one SBS debug frame
 // (the 2D source, the depth map and the SBS result) to the host's configured debug dir.
@@ -1125,6 +1141,7 @@ void LiRequestIdrFrame(void);
 // Legacy authored-PCM availability. Shared-profile hosts additionally advertise
 // LI_FF_DS5_HAPTICS_CAPABILITIES_V2 to use nonconflicting client capability bits.
 #define LI_FF_DS5_HAPTICS_PCM        0x80
+#define LI_FF_GAME_PROVIDER_V1      0x02000000 // Requires atomic v2; provider status and modes 2/3
 #define LI_FF_DS5_HAPTICS_IR_V2      0x04000000 // Optional IR v2 support (never implied by PCM)
 #define LI_FF_DS5_HAPTICS_CAPABILITIES_V2 0x08000000
 #define LI_FF_SOURCE_FRAME_ID_V1     0x10000000 // Exact encoder-input ID in short frame header

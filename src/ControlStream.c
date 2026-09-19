@@ -90,6 +90,16 @@ typedef struct _QUEUED_ASYNC_CALLBACK {
         struct {
             uint8_t payload[HOST_SBS_TELEMETRY_STATE_SIZE];
         } hostSbsTelemetryState;
+        struct {
+            uint8_t state;
+            uint8_t provider;
+            uint32_t presentationGeneration;
+            uint32_t sourceRevision;
+            uint16_t sourceWidth;
+            uint16_t sourceHeight;
+            uint16_t packedWidth;
+            uint16_t packedHeight;
+        } gameSourceStatus;
     } data;
     LINKED_BLOCKING_QUEUE_ENTRY entry;
 } QUEUED_ASYNC_CALLBACK, *PQUEUED_ASYNC_CALLBACK;
@@ -173,6 +183,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_VIDEO_MODE_ACK 16
 #define IDX_HOST_SBS_TELEMETRY_SUBSCRIBE 17
 #define IDX_HOST_SBS_TELEMETRY_STATE 18
+#define IDX_GAME_SOURCE_STATUS 19
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -199,6 +210,7 @@ static const short packetTypesGen3[] = {
     -1,     // Video Mode Ack (unused)
     -1,     // Host SBS Telemetry Subscribe (unused)
     -1,     // Host SBS Telemetry State (unused)
+    -1,     // Game provider status (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -220,6 +232,7 @@ static const short packetTypesGen4[] = {
     -1,     // Video Mode Ack (unused)
     -1,     // Host SBS Telemetry Subscribe (unused)
     -1,     // Host SBS Telemetry State (unused)
+    -1,     // Game provider status (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -241,6 +254,7 @@ static const short packetTypesGen5[] = {
     -1,     // Video Mode Ack (unused)
     -1,     // Host SBS Telemetry Subscribe (unused)
     -1,     // Host SBS Telemetry State (unused)
+    -1,     // Game provider status (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -262,6 +276,7 @@ static const short packetTypesGen7[] = {
     -1,     // Video Mode Ack (unused)
     -1,     // Host SBS Telemetry Subscribe (unused)
     -1,     // Host SBS Telemetry State (unused)
+    -1,     // Game provider status (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -283,6 +298,7 @@ static const short packetTypesGen7Enc[] = {
     0x3008, // Video Mode Ack (Apollo protocol extension, host->client)
     0x3009, // Host SBS Telemetry Subscribe (Apollo protocol extension)
     0x300A, // Host SBS Telemetry State (Apollo protocol extension, host->client)
+    0x300B, // Game provider status v1 (requires atomic presentation v2)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -1095,6 +1111,17 @@ static void asyncCallbackThreadFunc(void* context) {
                 ListenerCallbacks.depthStatus(queuedCb->data.depthStatus.phase);
             }
             break;
+        case IDX_GAME_SOURCE_STATUS:
+            // Replaceable readiness never competes with the correctness-critical ACK queue.
+            if (ListenerCallbacks.gameSourceStatus != NULL) {
+                ListenerCallbacks.gameSourceStatus(
+                    queuedCb->data.gameSourceStatus.state, queuedCb->data.gameSourceStatus.provider,
+                    queuedCb->data.gameSourceStatus.presentationGeneration,
+                    queuedCb->data.gameSourceStatus.sourceRevision,
+                    queuedCb->data.gameSourceStatus.sourceWidth, queuedCb->data.gameSourceStatus.sourceHeight,
+                    queuedCb->data.gameSourceStatus.packedWidth, queuedCb->data.gameSourceStatus.packedHeight);
+            }
+            break;
         case IDX_HOST_SBS_TELEMETRY_STATE:
             // Telemetry is replaceable state. Collapse adjacent samples so a briefly delayed
             // callback consumer never walks through an obsolete high-frequency backlog.
@@ -1129,7 +1156,8 @@ static bool needsAsyncCallback(unsigned short packetType) {
            packetType == packetTypes[IDX_HDR_INFO] ||
            packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
            packetType == packetTypes[IDX_DEPTH_STATUS] ||
-           packetType == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE];
+           packetType == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE] ||
+           packetType == packetTypes[IDX_GAME_SOURCE_STATUS];
 }
 
 static void queuePresentationAck(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
@@ -1185,12 +1213,47 @@ static void queuePresentationAck(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packet
     }
 }
 
+static bool decodeGameSourceStatus(const uint8_t* payload, int payloadLength, PQUEUED_ASYNC_CALLBACK queuedCb) {
+    BYTE_BUFFER bb;
+    if (payloadLength != GAME_SOURCE_STATUS_SIZE || payload[0] != GAME_SOURCE_STATUS_VERSION ||
+            payload[1] > GAME_SOURCE_UNSUPPORTED || payload[2] > GAME_PROVIDER_RESHADE || payload[3] != 0 ||
+            (payload[1] == GAME_SOURCE_READY && payload[2] == GAME_PROVIDER_NONE)) {
+        return false;
+    }
+    queuedCb->typeIndex = IDX_GAME_SOURCE_STATUS;
+    queuedCb->data.gameSourceStatus.state = payload[1];
+    queuedCb->data.gameSourceStatus.provider = payload[2];
+    BbInitializeWrappedBuffer(&bb, (char*)payload, 4, payloadLength - 4, BYTE_ORDER_LITTLE);
+    BbGet32(&bb, &queuedCb->data.gameSourceStatus.presentationGeneration);
+    BbGet32(&bb, &queuedCb->data.gameSourceStatus.sourceRevision);
+    BbGet16(&bb, &queuedCb->data.gameSourceStatus.sourceWidth);
+    BbGet16(&bb, &queuedCb->data.gameSourceStatus.sourceHeight);
+    BbGet16(&bb, &queuedCb->data.gameSourceStatus.packedWidth);
+    BbGet16(&bb, &queuedCb->data.gameSourceStatus.packedHeight);
+    return queuedCb->data.gameSourceStatus.presentationGeneration != 0 &&
+           queuedCb->data.gameSourceStatus.sourceRevision != 0 &&
+           queuedCb->data.gameSourceStatus.sourceWidth >= 2 &&
+           queuedCb->data.gameSourceStatus.sourceWidth <= 16384 &&
+           !(queuedCb->data.gameSourceStatus.sourceWidth & 1) &&
+           queuedCb->data.gameSourceStatus.sourceHeight >= 2 &&
+           queuedCb->data.gameSourceStatus.sourceHeight <= 16384 &&
+           !(queuedCb->data.gameSourceStatus.sourceHeight & 1) &&
+           queuedCb->data.gameSourceStatus.packedWidth == queuedCb->data.gameSourceStatus.sourceWidth * 2 &&
+           queuedCb->data.gameSourceStatus.packedHeight == queuedCb->data.gameSourceStatus.sourceHeight;
+}
+
 static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
     BYTE_BUFFER bb;
     PQUEUED_ASYNC_CALLBACK queuedCb;
     int err;
 
     LC_ASSERT(needsAsyncCallback(ctlHdr->type));
+
+    if (ctlHdr->type == packetTypes[IDX_GAME_SOURCE_STATUS] &&
+            (SunshineFeatureFlags & (LI_FF_GAME_PROVIDER_V1 | LI_FF_ATOMIC_PRESENTATION_MODE_V2)) !=
+            (LI_FF_GAME_PROVIDER_V1 | LI_FF_ATOMIC_PRESENTATION_MODE_V2)) {
+        return;
+    }
 
     if (ctlHdr->type == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE]) {
         if (!(SunshineFeatureFlags & LI_FF_HOST_SBS_TELEMETRY_V2) ||
@@ -1255,6 +1318,12 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
     else if (ctlHdr->type == packetTypes[IDX_DEPTH_STATUS]) {
         BbGet8(&bb, &queuedCb->data.depthStatus.phase);
         queuedCb->typeIndex = IDX_DEPTH_STATUS;
+    }
+    else if (ctlHdr->type == packetTypes[IDX_GAME_SOURCE_STATUS]) {
+        if (!decodeGameSourceStatus((const uint8_t*)(ctlHdr + 1), packetLength - sizeof(*ctlHdr), queuedCb)) {
+            free(queuedCb);
+            return;
+        }
     }
     else if (ctlHdr->type == packetTypes[IDX_HOST_SBS_TELEMETRY_STATE]) {
         BbGetBytes(&bb, queuedCb->data.hostSbsTelemetryState.payload,
@@ -2346,7 +2415,15 @@ int LiSendSetVideoModeV2(uint8_t desiredMode, uint32_t requestId,
     uint8_t payload[20];
 
     if (!(SunshineFeatureFlags & LI_FF_ATOMIC_PRESENTATION_MODE_V2) ||
-            packetTypes[IDX_SET_VIDEO_MODE] == -1) {
+            packetTypes == NULL || packetTypes[IDX_SET_VIDEO_MODE] == -1 ||
+            desiredMode > SBS_MODE_GAME_SBS ||
+            (desiredMode >= SBS_MODE_GAME_MONO && !(SunshineFeatureFlags & LI_FF_GAME_PROVIDER_V1))) {
+        return -1;
+    }
+
+    if (sourceWidth < 2 || sourceWidth > 16384 || (sourceWidth & 1) ||
+            sourceHeight < 2 || sourceHeight > 16384 || (sourceHeight & 1) ||
+            framerateX100 < 100 || framerateX100 > 100000 || totalWireBitrateKbps == 0) {
         return -1;
     }
 

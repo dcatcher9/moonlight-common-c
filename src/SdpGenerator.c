@@ -278,6 +278,10 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr, int videoPacketSizeMaximu
             // Android with no authored callback must not announce those SBS bits.
             moonlightFeatureFlags = ML_FF_FEC_STATUS | ML_FF_SESSION_ID_V1;
         }
+        if ((SunshineFeatureFlags & (LI_FF_GAME_PROVIDER_V1 | LI_FF_ATOMIC_PRESENTATION_MODE_V2)) ==
+                (LI_FF_GAME_PROVIDER_V1 | LI_FF_ATOMIC_PRESENTATION_MODE_V2)) {
+            moonlightFeatureFlags |= ML_FF_GAME_PROVIDER_V1;
+        }
         moonlightFeatureFlags |= getDs5HapticsClientFeatureFlags(SunshineFeatureFlags,
             ListenerCallbacks.ds5HapticsPcm != NULL, ListenerCallbacks.ds5HapticsIrV2 != NULL);
         snprintf(payloadStr, sizeof(payloadStr), "%u", moonlightFeatureFlags);
